@@ -1,5 +1,7 @@
 # 🧠 AiMem — AI Memory Switcher
 
+<img src="assets/poster.png" alt="AiMem - Transfer context between AI agents" width="100%">
+
 [![PyPI](https://img.shields.io/pypi/v/aimem-cli?color=blue)](https://pypi.org/project/aimem-cli/)
 [![Python](https://img.shields.io/pypi/pyversions/aimem-cli)](https://pypi.org/project/aimem-cli/)
 [![License](https://img.shields.io/pypi/l/aimem-cli)](LICENSE)
