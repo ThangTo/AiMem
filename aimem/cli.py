@@ -489,7 +489,18 @@ def cmd_load(args):
             print(f"  Path: {injected_path}")
             print(f"  Messages: {len(session.messages)}")
             print(f"  Tokens: ~{session.estimate_tokens():,}")
-            print(f"\nYou can now open {target} and continue from this session.")
+
+            # Show resume command based on target
+            resume_cmds = {
+                "claude": "claude --resume",
+                "gemini": "gemini --resume latest",
+                "qwen": "qwen --continue",
+                "opencode": f"opencode -s {injected_path}",
+                "codex": "codex --resume",
+            }
+            cmd = resume_cmds.get(target, target)
+            print(f"\nTo resume, run this command:")
+            print(f"  > {cmd}")
             return
         except Exception as e:
             print(error(f"Failed to inject: {e}"))
