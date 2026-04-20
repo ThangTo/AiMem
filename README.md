@@ -1,8 +1,37 @@
 # 🧠 AiMem — AI Memory Switcher
 
+[![PyPI](https://img.shields.io/pypi/v/aimem-cli?color=blue)](https://pypi.org/project/aimem-cli/)
+[![Python](https://img.shields.io/pypi/pyversions/aimem-cli)](https://pypi.org/project/aimem-cli/)
+[![License](https://img.shields.io/pypi/l/aimem-cli)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/ThangTo/AiMem)](https://github.com/ThangTo/AiMem/stargazers)
+
 > Transfer context seamlessly between AI agents (Claude, Gemini, Qwen, OpenCode, Codex...)
 
 When Claude hits rate-limits or you need to switch to another AI, AiMem helps you continue without losing your train of thought.
+
+**If this project helps you, please give it a ⭐ on [GitHub](https://github.com/ThangTo/AiMem)!**
+
+---
+
+## 🤔 The Problem
+
+```
+You: "Claude is running out of tokens..."
+─────────────────────────────────────────────────
+│ Claude: Fixing authentication bug...            │
+│ 11PM - Claude hits rate limit!                │
+│                                              │
+│ NOW WHAT?                                    │
+│ → Copy all chat history? Tedious             │
+│ → Start from scratch? 30+ minutes lost      │
+│ → Lose context? Devastating                 │
+─────────────────────────────────────────────────
+
+→ With AiMem: 3 seconds to transfer
+$ aimem save --from claude
+$ aimem load sess-abc --to gemini
+# Paste into Gemini - full context transferred!
+```
 
 ---
 
@@ -19,6 +48,18 @@ git clone https://github.com/ThangTo/AiMem.git
 cd AiMem
 pip install -e .
 ```
+
+---
+
+## ✨ Features
+
+- 📤 **Save** sessions from Claude, Gemini, Qwen, OpenCode, Codex, Aider, Continue.dev
+- 📥 **Load** to any AI agent with proper format
+- 💉 **Inject** directly into agent storage (no copy-paste!)
+- 📊 **Analyze** if session fits target model context limit
+- ✂️ **Chunk** large sessions automatically
+- 🗜️ **Compress** sessions with LLM (95% reduction)
+- 🔀 **Merge** multiple sessions
 
 ---
 
@@ -399,14 +440,51 @@ aimem-cli/
 
 ---
 
-## 📦 Requirements
+---
 
-- Python 3.10+
-- `pyperclip>=1.8.0` (clipboard support)
-- `ulid-py>=1.1.0` (session ID generation)
+## 📋 Supported Agents
+
+| Source | Storage | Inject? |
+|--------|---------|----------|
+| Claude | `~/.claude/projects/*/*.jsonl` | ✅ |
+| Gemini | `~/.gemini/tmp/*/chats/*.json` | ✅ |
+| Qwen | `~/.qwen/tmp/*/logs.json` | ✅ |
+| OpenCode | `~/.opencode/sessions/*.json` | ✅ |
+| Codex | `~/.codex/sessions/*.jsonl` | ✅ |
+| Aider | `~/.aider.chat.history.md` | ❌ |
+| Continue | `~/.continue/sessions.db` | ❌ |
+| Clipboard | System clipboard | ❌ |
 
 ---
 
-## License
+## 🚀 Roadmap
 
-MIT
+- [ ] Add more adapters ( Zed, Cursor )
+- [ ] Docker support
+- [ ] WebUI for session management
+- [ ] VS Code extension
+
+---
+
+## 📝 License
+
+MIT License - See [LICENSE](LICENSE)
+
+---
+
+## 👏 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
+
+---
+
+## 👏 Acknowledgments
+
+- Claude Code for the great developer experience
+- All open source contributors
+
+---
+
+<p align="center">
+  <sub>Made with ❤️ by <a href="https://github.com/ThangTo">ThangTo</a></sub>
+</p>
