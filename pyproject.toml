@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aimem-cli"
-version = "0.2.2"
+version = "0.2.3"
 description = "AI Memory Switcher — Save, compress, and transfer context between AI agents"
 readme = "README.md"
 license = {text = "MIT"}
@@ -40,6 +40,10 @@ dev = [
 redis = [
     "redis>=4.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["aimem*"]
+exclude = ["assets*"]
 
 [project.scripts]
 aimem-cli = "aimem.cli:main"
