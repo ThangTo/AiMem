@@ -85,6 +85,9 @@ aimem-cli save --from continue
 
 # From Clipboard
 aimem-cli save --from clipboard
+
+# With LLM compression (requires API key)
+aimem-cli save --from claude --compress
 ```
 
 ---
@@ -107,6 +110,15 @@ aimem-cli load <session-id> --to qwen
 
 # To Prompt (for API calls)
 aimem-cli load <session-id> --to prompt
+
+# To OpenCode
+aimem-cli load <session-id> --to opencode
+
+# To Codex
+aimem-cli load <session-id> --to codex
+
+# To Continue.dev
+aimem-cli load <session-id> --to continue
 ```
 
 ---
@@ -157,8 +169,14 @@ aimem-cli list --agents
 Merge multiple sessions into one.
 
 ```bash
+# Simple merge (concatenate)
 aimem-cli merge sess-abc sess-def
-# Creates new merged session
+
+# Smart merge (deduplicate, combine goals, merge todos)
+aimem-cli merge sess-abc sess-def --smart
+
+# Smart merge with target format
+aimem-cli merge sess-abc sess-def --smart --to gemini
 ```
 
 ---
@@ -185,6 +203,62 @@ Delete a saved session.
 
 ```bash
 aimem-cli delete <session-id>
+```
+
+---
+
+### Analyze context before loading
+
+Check if a session fits in target model's context limit.
+
+```bash
+# Analyze if session fits in Qwen's 32K context
+aimem-cli load <session-id> --to qwen --analyze
+
+# Output example:
+# ⚠️ Session EXCEEDS Qwen limit (50K tokens vs 32K limit)
+# 💡 Try: aimem load <session-id> --to qwen --chunk
+```
+
+---
+
+### Chunk large sessions
+
+Automatically split session into smaller chunks if too large for target.
+
+```bash
+# Auto-chunk for Qwen (32K limit)
+aimem-cli load <session-id> --to qwen --chunk
+
+# Output:
+# 📦 CHUNK 1/2 (25K tokens)
+# [content of chunk 1]
+# ─────────────────────
+# 📦 CHUNK 2/2 (25K tokens)
+# [content of chunk 2]
+```
+
+---
+
+### Compress session with LLM
+
+Reduce session size using LLM compression (requires API key).
+
+```bash
+# Compress on save
+aimem-cli save --from claude --compress
+
+# Compress on load
+aimem-cli load <session-id> --compress
+
+# Result: ~95% size reduction
+# Output: {
+#   "current_goal": "Fix authentication bug",
+#   "latest_code": [{"path": "auth.py", "content": "..."}],
+#   "current_errors": ["TypeError: undefined"],
+#   "key_decisions": ["Used JWT instead of session"],
+#   "todo_list": ["Write tests", "Deploy to staging"]
+# }
 ```
 
 ---

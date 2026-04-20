@@ -118,3 +118,9 @@ Thumbs.db
 # Project specific
 .aimem/
 *.db-journal
+code.txt
+
+# Debug/test scripts (temporary)
+check_*.py
+test_inject.py
+debug_compare.py

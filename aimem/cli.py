@@ -437,6 +437,29 @@ def cmd_load(args):
         else:
             print(info(f"Session fits in {advice.target_model} — no chunking needed."))
 
+    # Compression on load (opt-in via --compress flag OR compression.enabled in config)
+    if args.compress or load_config().get("compression", {}).get("enabled", False):
+        config = load_config()
+        engine = CompressionEngine(config)
+
+        if not engine.is_configured():
+            print(warn("Compression requires API key. Set with:"))
+            print("  aimem config set compression.enabled true")
+            print("  aimem config set compression.api_key YOUR_KEY")
+            print("  aimem config set compression.provider groq")
+        else:
+            print(info("Compressing session..."))
+            original_tokens = session.estimate_tokens()
+            session.compressed = engine.compress(session)
+
+            if session.compressed:
+                compressed_tokens = session.compressed.summary_token_count
+                ratio = compressed_tokens / max(original_tokens, 1)
+                print(success(f"Compressed: {original_tokens:,} tokens -> {compressed_tokens:,} tokens"))
+
+                if session.compressed.current_goal:
+                    print(f"  Goal: {session.compressed.current_goal[:60]}...")
+
     # Inject directly into target agent storage
     if args.inject:
         inject_targets = {
@@ -824,6 +847,8 @@ Repository: https://github.com/aimem/aimem
                        help="Show context analysis (token count, warnings, suggestions)")
     p_load.add_argument("--chunk", action="store_true",
                        help="Split into chunks if session exceeds target context limit")
+    p_load.add_argument("--compress", action="store_true",
+                       help="LLM compress before output (requires API key)")
     p_load.add_argument("--inject", action="store_true",
                        help="Inject directly into target agent storage (claude, gemini, qwen, codex, opencode)")
     p_load.set_defaults(func=cmd_load)
