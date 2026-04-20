@@ -24,70 +24,168 @@ pip install -e .
 
 ## ⚡ Quick Start
 
-### Save a session from Claude:
+### Transfer from Claude to OpenCode (Recommended)
 ```bash
+# Save current Claude session
 aimem-cli save --from claude
-```
-
-### Load into another agent:
-```bash
-# Load as Markdown (copy to clipboard)
-aimem-cli load <session-id> --to markdown
 
 # Inject directly into OpenCode
 aimem-cli load <session-id> --to opencode --inject
+
+# Open the session in OpenCode
 opencode -s <session-id-from-output>
 ```
 
+### Transfer to Markdown (for any AI)
+```bash
+aimem-cli save --from claude
+aimem-cli load <session-id> --to markdown
+# Content copied to clipboard - paste anywhere
+```
+
 ---
 
-## 📖 Usage Examples
+## 📖 All Commands
 
-### 1. Transfer from Claude to OpenCode (Recommended)
+### `aimem-cli init`
+Initialize config file at `~/.aimem/config.json`.
+
 ```bash
-# Save Claude session
-aimem-cli save --from claude
-
-# Inject directly into OpenCode
-aimem-cli load claude-xxxxx --to opencode --inject
-
-# Open the session in OpenCode
-opencode -s ses_xxxxx
+aimem-cli init
+aimem-cli init --force    # Overwrite existing config
 ```
 
-### 2. Transfer from Claude to Gemini
+---
+
+### `aimem-cli save --from <agent>`
+Save a session from an agent to AiMem storage.
+
 ```bash
-# Save Claude session
+# From Claude
 aimem-cli save --from claude
+aimem-cli save --from claude --session-id <id>
 
-# Load as Gemini format (auto-copied to clipboard)
-aimem-cli load claude-xxxxx --to gemini
+# From Gemini
+aimem-cli save --from gemini
 
-# Paste into Gemini CLI
-gemini "paste the context here"
+# From Qwen
+aimem-cli save --from qwen
+
+# From OpenCode
+aimem-cli save --from opencode
+
+# From Codex
+aimem-cli save --from codex
+
+# From Aider
+aimem-cli save --from aider
+
+# From Continue.dev
+aimem-cli save --from continue
+
+# From Clipboard
+aimem-cli save --from clipboard
 ```
 
-### 3. Transfer to Claude
+---
+
+### `aimem-cli load <session-id> --to <format>`
+Load a saved session to target format.
+
 ```bash
-# Load session into Claude (inject directly)
+# To Markdown (copy to clipboard)
+aimem-cli load <session-id> --to markdown
+
+# To Claude (markdown format)
+aimem-cli load <session-id> --to claude
+
+# To Gemini
+aimem-cli load <session-id> --to gemini
+
+# To Qwen
+aimem-cli load <session-id> --to qwen
+
+# To Prompt (for API calls)
+aimem-cli load <session-id> --to prompt
+```
+
+---
+
+### `aimem-cli load <session-id> --to <agent> --inject`
+**Inject directly into agent storage** - no copy-paste needed!
+
+```bash
+# Inject into OpenCode (RECOMMENDED)
+aimem-cli load <session-id> --to opencode --inject
+opencode -s <session-id>
+
+# Inject into Claude
 aimem-cli load <session-id> --to claude --inject
-
-# Resume in Claude
 claude --resume
+
+# Inject into Gemini
+aimem-cli load <session-id> --to gemini --inject
+
+# Inject into Qwen
+aimem-cli load <session-id> --to qwen --inject
+
+# Inject into Codex
+aimem-cli load <session-id> --to codex --inject
 ```
 
 ---
 
-## 📋 Commands
+### `aimem-cli list`
+List all saved sessions.
 
-| Command | Description |
-|---------|-------------|
-| `aimem-cli save --from <agent>` | Save session from an agent |
-| `aimem-cli load <id> --to <format>` | Load session to target format |
-| `aimem-cli load <id> --to <agent> --inject` | Inject directly into agent storage |
-| `aimem-cli list` | List saved sessions |
-| `aimem-cli list <agent>` | List sessions from specific agent |
-| `aimem-cli delete <id>` | Delete a saved session |
+```bash
+# List all saved sessions
+aimem-cli list
+
+# List sessions from specific agent
+aimem-cli list --from claude
+aimem-cli list --from gemini
+aimem-cli list --from qwen
+
+# List available agents
+aimem-cli list --agents
+```
+
+---
+
+### `aimem-cli merge <session-id-1> <session-id-2>`
+Merge multiple sessions into one.
+
+```bash
+aimem-cli merge sess-abc sess-def
+# Creates new merged session
+```
+
+---
+
+### `aimem-cli config`
+View or update configuration.
+
+```bash
+# Show current config
+aimem-cli config
+
+# Set config values
+aimem-cli config set compression.enabled true
+aimem-cli config set compression.api_key YOUR_API_KEY
+aimem-cli config set compression.provider groq
+aimem-cli config set output.format markdown
+aimem-cli config set output.clipboard_auto true
+```
+
+---
+
+### `aimem-cli delete <session-id>`
+Delete a saved session.
+
+```bash
+aimem-cli delete <session-id>
+```
 
 ---
 
@@ -116,7 +214,7 @@ claude --resume
 | `qwen` | Qwen CLI | ✅ |
 | `opencode` | OpenCode CLI | ✅ |
 | `codex` | Codex CLI | ✅ |
-| `prompt` | Custom injection | ❌ |
+| `prompt` | API calls | ❌ |
 
 ---
 
@@ -131,9 +229,65 @@ aimem-cli config
 # Enable LLM compression (opt-in)
 aimem-cli config set compression.enabled true
 aimem-cli config set compression.api_key YOUR_GROQ_KEY
+aimem-cli config set compression.provider groq
 
 # Auto-copy to clipboard
 aimem-cli config set output.clipboard_auto true
+```
+
+### Config Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `compression.enabled` | `false` | Enable LLM compression |
+| `compression.provider` | `"groq"` | Compression provider (groq, gemini) |
+| `compression.api_key` | `""` | API key for compression |
+| `output.format` | `"markdown"` | Default output format |
+| `output.clipboard_auto` | `true` | Auto-copy to clipboard |
+| `storage.path` | `"~/.aimem/sessions"` | Session storage path |
+
+---
+
+## 📝 Examples
+
+### Example 1: Transfer Claude session to OpenCode
+```bash
+$ aimem-cli save --from claude
+[i] Found 5 Claude sessions. Select one:
+  [1] 2026-04-20 | Fix authentication bug
+  [2] 2026-04-19 | Add user login feature
+  [3] 2026-04-18 | Research API design
+Enter number (default=1): 1
+[OK] Saved session: claude-abc123
+
+$ aimem-cli load claude-abc123 --to opencode --inject
+[OK] Injected into OpenCode
+    Session ID: ses_xyz789
+Resume with: opencode -s ses_xyz789
+
+$ opencode -s ses_xyz789
+# Continue with full context in OpenCode!
+```
+
+### Example 2: Transfer to any AI via Markdown
+```bash
+$ aimem-cli save --from claude
+[OK] Saved session: claude-abc123
+
+$ aimem-cli load claude-abc123 --to markdown
+[OK] Content copied to clipboard!
+
+# Paste into any AI: Gemini, ChatGPT, Qwen, etc.
+```
+
+### Example 3: Merge multiple sessions
+```bash
+$ aimem-cli merge claude-abc claude-def claude-ghi
+[i] Merging 3 sessions...
+[OK] Merged session: merged-xyz123
+    Total messages: 156
+
+$ aimem-cli load merged-xyz123 --to gemini --inject
 ```
 
 ---
@@ -142,37 +296,40 @@ aimem-cli config set output.clipboard_auto true
 
 ```
 aimem-cli/
-├── adapters/           # Read from different agents
-│   ├── claude.py      # Claude Code
-│   ├── gemini.py      # Gemini CLI
-│   ├── opencode.py    # OpenCode
-│   └── ...
-├── storage.py         # Save/load sessions
-├── compression.py     # LLM compression (opt-in)
-└── cli.py             # Command-line interface
+├── aimem/
+│   ├── cli.py                 # CLI interface
+│   ├── models.py              # UniversalSession model
+│   ├── storage.py             # File storage
+│   ├── compression.py         # LLM compression
+│   ├── context_manager.py     # Context management
+│   └── adapters/
+│       ├── claude.py          # Claude Code adapter
+│       ├── gemini.py          # Gemini CLI adapter
+│       ├── qwen.py             # Qwen CLI adapter
+│       ├── opencode.py         # OpenCode adapter
+│       ├── codex.py            # Codex adapter
+│       ├── aider.py            # Aider adapter
+│       ├── continue_dev.py     # Continue.dev adapter
+│       ├── clipboard.py        # Clipboard adapter
+│       └── output/             # Output formatters
+│           ├── __init__.py
+│           ├── markdown.py
+│           ├── claude.py
+│           ├── gemini.py
+│           ├── qwen.py
+│           ├── prompt.py
+│           ├── continue.py
+│           ├── codex.py
+│           └── opencode.py
 ```
 
 ---
 
-## 📝 Examples
+## 📦 Requirements
 
-### Save from Claude
-```bash
-$ aimem-cli save --from claude
-[i] Found 5 Claude sessions. Select one:
-  [1] 2026-04-20 | Fix bug in auth module
-  [2] 2026-04-19 | Add user login feature
-  [3] 2026-04-18 | Research API design
-Enter number (default=1): 1
-[OK] Saved session: claude-abc123
-```
-
-### Load to OpenCode with inject
-```bash
-$ aimem-cli load claude-abc123 --to opencode --inject
-[OK] Injected into OpenCode
-Resume with: opencode -s ses_xyz789
-```
+- Python 3.10+
+- `pyperclip>=1.8.0` (clipboard support)
+- `ulid-py>=1.1.0` (session ID generation)
 
 ---
 
