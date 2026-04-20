@@ -15,14 +15,14 @@ Agent A (Claude)  ──▶  Read Session  ──▶  Universal Format  ──�
 ## Install
 
 ```bash
-pip install aimem
+pip install aimem-cli
 ```
 
 Or from source:
 
 ```bash
-git clone https://github.com/aimem/aimem.git
-cd aimem
+git clone https://github.com/ThangTo/AiMem.git
+cd AiMem
 pip install -e .
 ```
 
