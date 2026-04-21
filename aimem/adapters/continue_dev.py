@@ -152,7 +152,7 @@ def _find_json_sessions(base: Path) -> list[Path]:
     files = []
     for d in patterns:
         if d.exists():
-            files.extend(d.glob("*.json"))
+            files.extend(path for path in d.glob("*.json") if path.name != "sessions.json")
             files.extend(d.glob("*.jsonl"))
 
     if not files:

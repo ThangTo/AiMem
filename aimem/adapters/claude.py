@@ -1,147 +1,175 @@
 """
-Claude Adapter - Đọc session từ Claude Code (Claude CLI / VS Code).
-Storage: ~/.claude/projects/{project}/{session_id}.jsonl (JSON Lines)
+Claude Adapter - read/write sessions for Claude Code.
+Storage: ~/.claude/projects/{project}/{session_id}.jsonl
 """
 
-from pathlib import Path
-from datetime import datetime, timezone
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path, PureWindowsPath
 from typing import Literal
 import json
+import os
+import subprocess
 import uuid
 
-from ..models import UniversalSession, Message, ContextItem, SessionMetadata
+from ..models import UniversalSession, Message, SessionMetadata
 
-
-# ─────────────────────────────────────────────────────────────
-# Path Discovery
-# ─────────────────────────────────────────────────────────────
 
 def _get_claude_base() -> Path:
-    """Tìm thư mục gốc của Claude Code config."""
-    import os
     home = Path(os.path.expanduser("~"))
     return home / ".claude"
 
 
-def _get_project_sessions() -> list[Path]:
-    """Tìm tất cả session files (JSONL) trong projects directory."""
-    base = _get_claude_base()
-    projects_dir = base / "projects"
+def _project_dir_name(cwd: str) -> str:
+    path = PureWindowsPath(cwd)
+    if path.drive:
+        drive = path.drive.rstrip(":").lower()
+        parts = [part for part in path.parts[1:] if part not in ("\\", "/")]
+        return f"{drive}--{'-'.join(parts)}" if parts else drive
+    cleaned = [part for part in path.parts if part not in ("\\", "/")]
+    return "-".join(cleaned) or "default"
 
+
+def _get_project_sessions() -> list[Path]:
+    projects_dir = _get_claude_base() / "projects"
     if not projects_dir.exists():
         return []
-
-    sessions = []
+    files = []
     for jsonl_file in projects_dir.rglob("*.jsonl"):
-        # Filter out non-session files (metrics, etc.)
-        if jsonl_file.name in ("costs.jsonl", "metrics.jsonl"):
+        if jsonl_file.name in {"costs.jsonl", "metrics.jsonl"}:
             continue
-        sessions.append(jsonl_file)
-
-    return sorted(sessions, key=lambda p: p.stat().st_mtime, reverse=True)
+        files.append(jsonl_file)
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files
 
 
 def _parse_jsonl(file_path: Path) -> list[dict]:
-    """Parse JSONL file thành list of dicts."""
-    if not file_path.exists():
-        return []
-
-    messages = []
+    messages: list[dict] = []
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            for line in f:
+        with file_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
                 line = line.strip()
-                if line:
-                    try:
-                        messages.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-    except (OSError, IOError):
-        pass
-
+                if not line:
+                    continue
+                try:
+                    messages.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
     return messages
 
 
 def _extract_message_content(msg: dict) -> str:
-    """Trích xuất text content từ message dict."""
-    content = ""
+    msg_type = msg.get("type")
+    if msg_type == "assistant":
+        message = msg.get("message", {})
+        content = message.get("content", []) if isinstance(message, dict) else []
+        if isinstance(content, str):
+            return content.strip()
+        chunks: list[str] = []
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text = block.get("text", "")
+                    if text:
+                        chunks.append(text)
+                elif block.get("type") == "thinking":
+                    thinking = block.get("thinking", "")
+                    if thinking:
+                        chunks.append(f"[Thinking: {thinking}]")
+                elif block.get("type") == "tool_use":
+                    name = block.get("name", "tool")
+                    chunks.append(f"[Tool: {name}]")
+        return "\n".join(chunks).strip()
 
-    # System messages
-    if msg.get("type") == "system":
+    if msg_type == "user":
+        message = msg.get("message", {})
+        content = message.get("content", "") if isinstance(message, dict) else message
+        if isinstance(content, str):
+            return content.strip()
+        chunks: list[str] = []
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text = block.get("text", "")
+                    if text:
+                        chunks.append(text)
+                elif block.get("type") == "tool_result":
+                    text = block.get("content", "")
+                    if text:
+                        chunks.append(str(text))
+        return "\n".join(chunks).strip()
+
+    if msg_type == "system":
         subtype = msg.get("subtype", "")
         if subtype == "api_error":
-            error = msg.get("error", {})
-            error_msg = error.get("error", {}).get("message", "")
-            content = f"[API Error] {error_msg}"
-        else:
-            content = f"[System: {subtype}]"
-        return content
-
-    # Assistant messages
-    if msg.get("type") == "assistant":
-        message_data = msg.get("message", {})
-        content_list = message_data.get("content", [])
-
-        if isinstance(content_list, list):
-            for block in content_list:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        content += block.get("text", "")
-                    elif block.get("type") == "thinking":
-                        # Skip long thinking blocks
-                        thinking = block.get("thinking", "")[:200]
-                        if thinking:
-                            content += f"[Thinking: {thinking}...]\n"
-                    elif block.get("type") == "tool_use":
-                        tool_name = block.get("name", "unknown")
-                        content += f"[Tool: {tool_name}]\n"
-        elif isinstance(content_list, str):
-            content = content_list
-
-        return content.strip()
-
-    # User messages
-    if msg.get("type") == "user":
-        message_data = msg.get("message", {})
-        content_list = message_data.get("content", [])
-
-        if isinstance(content_list, list):
-            for block in content_list:
-                if isinstance(block, dict):
-                    if block.get("type") == "text":
-                        content += block.get("text", "")
-                    elif block.get("type") == "tool_result":
-                        tool_id = block.get("tool_use_id", "")
-                        result = block.get("content", "")
-                        is_error = block.get("is_error", False)
-                        prefix = "[Error] " if is_error else "[Tool Result] "
-                        content += f"{prefix}{result[:500]}\n"
-        elif isinstance(content_list, str):
-            content = content_list
-
-        # Also check direct 'message' field
-        if not content and msg.get("message"):
-            if isinstance(msg["message"], str):
-                content = msg["message"]
-            elif isinstance(msg["message"], dict):
-                content = msg["message"].get("content", "")
-                if isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            content += block.get("text", "")
-
-        return content.strip()
-
-    return content
+            error = msg.get("error", {}).get("error", {}).get("message", "")
+            return f"[API Error] {error}".strip()
+    return ""
 
 
-# ─────────────────────────────────────────────────────────────
-# Main Adapter Class
-# ─────────────────────────────────────────────────────────────
+def _detect_defaults(cwd: str) -> dict[str, str]:
+    project_dir = _get_claude_base() / "projects" / _project_dir_name(cwd)
+    candidate_files = []
+    if project_dir.exists():
+        candidate_files.extend(sorted(project_dir.glob("*.jsonl"), key=lambda path: path.stat().st_mtime, reverse=True))
+    candidate_files.extend(_get_project_sessions())
+
+    for file_path in candidate_files:
+        for raw in _parse_jsonl(file_path):
+            if raw.get("type") not in {"user", "assistant"}:
+                continue
+            return {
+                "version": raw.get("version", ""),
+                "git_branch": raw.get("gitBranch", ""),
+                "entrypoint": raw.get("entrypoint", "cli"),
+                "user_type": raw.get("userType", "external"),
+                "model": raw.get("message", {}).get("model", "") if isinstance(raw.get("message"), dict) else "",
+            }
+    return {
+        "version": "",
+        "git_branch": "",
+        "entrypoint": "cli",
+        "user_type": "external",
+        "model": "",
+    }
+
+
+def _detect_git_branch(cwd: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd, "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _format_ts(ts: str | None, fallback: datetime) -> str:
+    if ts:
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            dt = fallback
+    else:
+        dt = fallback
+    dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
 
 class ClaudeAdapter:
-    """Adapter để đọc session từ Claude Code."""
-
     name = "claude"
     description = "Claude Code (CLI & VS Code)"
 
@@ -149,256 +177,222 @@ class ClaudeAdapter:
         self.base = _get_claude_base()
 
     def is_available(self) -> bool:
-        """Kiểm tra Claude Code có được cài đặt không."""
         return self.base.exists() and (self.base / "projects").exists()
 
     def list_sessions(self) -> list[dict]:
-        """
-        List all available Claude sessions.
-        Returns list of {path, session_id, project, cwd, timestamp, message_count}
-        """
         sessions = []
-        project_sessions = _get_project_sessions()
+        for jsonl_path in _get_project_sessions():
+            raw_messages = _parse_jsonl(jsonl_path)
+            if not raw_messages:
+                continue
+            title = ""
+            user_msgs = 0
+            assistant_msgs = 0
+            for raw in raw_messages:
+                if raw.get("type") == "user":
+                    user_msgs += 1
+                    if not title:
+                        title = _extract_message_content(raw)
+                elif raw.get("type") == "assistant":
+                    assistant_msgs += 1
 
-        for jsonl_path in project_sessions:
-            msgs = _parse_jsonl(jsonl_path)
-
-            # Get metadata from first message
-            first = msgs[0] if msgs else {}
-            session_id = jsonl_path.stem  # filename without .jsonl
-
-            # Find timestamp
+            first = raw_messages[0]
             timestamp = ""
-            for m in reversed(msgs):
-                ts = m.get("timestamp", "")
+            for raw in reversed(raw_messages):
+                ts = raw.get("timestamp", "")
                 if ts:
                     timestamp = ts
                     break
 
-            # Find CWD
-            cwd = first.get("cwd", str(jsonl_path.parent))
-
-            # Count messages
-            user_msgs = sum(1 for m in msgs if m.get("type") == "user")
-            asst_msgs = sum(1 for m in msgs if m.get("type") == "assistant")
-
-            # Extract first user message as title
-            title = ""
-            for m in msgs:
-                if m.get("type") == "user":
-                    content = _extract_message_content(m)
-                    if content:
-                        title = content[:80].replace("\n", " ")
-                        break
-
             sessions.append({
                 "path": str(jsonl_path),
-                "session_id": session_id,
+                "session_id": jsonl_path.stem,
                 "project": jsonl_path.parent.name,
-                "cwd": cwd,
+                "cwd": first.get("cwd", ""),
                 "timestamp": timestamp,
                 "user_messages": user_msgs,
-                "assistant_messages": asst_msgs,
-                "total_messages": len(msgs),
-                "title": title,
+                "assistant_messages": assistant_msgs,
+                "total_messages": user_msgs + assistant_msgs,
+                "title": title[:120].replace("\n", " "),
             })
-
         return sessions
 
     def export(self, session_path: str | None = None, session_id: str | None = None) -> UniversalSession:
-        """
-        Export a Claude session to UniversalSession format.
-
-        Args:
-            session_path: Full path to JSONL file
-            session_id: Session ID (will search in projects/)
-        """
         if not self.is_available():
             raise RuntimeError("Claude Code is not installed or has no sessions.")
 
-        # Resolve path
         if session_path:
             jsonl_path = Path(session_path)
         elif session_id:
-            # Search in projects - supports partial match
-            projects_dir = self.base / "projects"
-            found = []
-
-            # Exact match first
-            exact = list(projects_dir.rglob(f"{session_id}.jsonl"))
-            found.extend(exact)
-
-            # Partial match (starts with session_id)
-            if not found:
-                for jsonl_file in projects_dir.rglob("*.jsonl"):
-                    if jsonl_file.stem.startswith(session_id) or session_id in jsonl_file.stem:
-                        found.append(jsonl_file)
-
-            if not found:
+            matches = [path for path in _get_project_sessions() if path.stem == session_id or path.stem.startswith(session_id)]
+            if not matches:
                 raise FileNotFoundError(f"Session not found: {session_id}")
-            jsonl_path = found[0]
+            jsonl_path = matches[0]
         else:
-            # Get most recent session
             sessions = _get_project_sessions()
             if not sessions:
                 raise RuntimeError("No Claude sessions found.")
             jsonl_path = sessions[0]
 
-        # Parse
-        raw_msgs = _parse_jsonl(jsonl_path)
-        if not raw_msgs:
+        raw_messages = _parse_jsonl(jsonl_path)
+        if not raw_messages:
             raise RuntimeError(f"Session file is empty or unreadable: {jsonl_path}")
 
-        # Convert to Message objects
-        messages = []
-        for raw in raw_msgs:
+        messages: list[Message] = []
+        for raw in raw_messages:
+            raw_type = raw.get("type")
+            if raw_type not in {"system", "user", "assistant"}:
+                continue
             content = _extract_message_content(raw)
             if not content:
-                continue  # Skip empty messages (system events without content)
-
-            msg_type = raw.get("type", "user")
+                continue
             role: Literal["system", "user", "assistant"] = "user"
-            if msg_type == "assistant":
+            if raw_type == "assistant":
                 role = "assistant"
-            elif msg_type == "system":
+            elif raw_type == "system":
                 role = "system"
-
             messages.append(Message(
                 id=raw.get("uuid", str(uuid.uuid4())),
                 role=role,
                 content=content,
                 timestamp=raw.get("timestamp", ""),
-                tool_calls=[],
                 metadata={
                     "parent_uuid": raw.get("parentUuid"),
                     "entrypoint": raw.get("entrypoint", ""),
                     "slug": raw.get("slug", ""),
-                }
+                },
             ))
 
-        # Extract metadata from first message
-        first = raw_msgs[0]
-        session_id_meta = first.get("sessionId", jsonl_path.stem)
-        cwd = first.get("cwd", "")
-        version = first.get("version", "")
-
-        # Find model from assistant messages
+        first = raw_messages[0]
         model = ""
-        for raw in raw_msgs:
+        for raw in raw_messages:
             if raw.get("type") == "assistant":
-                msg_data = raw.get("message", {})
-                if isinstance(msg_data, dict):
-                    model = msg_data.get("model", "")
-                    if model:
-                        break
+                message = raw.get("message", {})
+                if isinstance(message, dict):
+                    model = message.get("model", "")
+                if model:
+                    break
 
-        # Count tokens (rough)
-        total_text = "\n".join(m.content for m in messages)
-        token_count = len(total_text) // 4
-
-        # Build metadata
-        metadata = SessionMetadata(
-            source_agent="claude",
-            original_session_id=session_id_meta,
-            project_path=cwd,
-            model=model,
-            entrypoint=first.get("entrypoint", ""),
-            token_count=token_count,
-            version=version,
-        )
-
-        # Determine creation time
-        created_at = ""
-        for m in raw_msgs:
-            ts = m.get("timestamp", "")
-            if ts:
-                created_at = ts
-                break
-
-        updated_at = ""
-        for m in reversed(raw_msgs):
-            ts = m.get("timestamp", "")
-            if ts:
-                updated_at = ts
-                break
+        token_count = sum(len(message.content) for message in messages) // 4
+        created_at = next((raw.get("timestamp", "") for raw in raw_messages if raw.get("timestamp")), "")
+        updated_at = next((raw.get("timestamp", "") for raw in reversed(raw_messages) if raw.get("timestamp")), "")
 
         return UniversalSession(
-            id=f"claude-{session_id_meta[:8]}",
+            id=f"claude-{first.get('sessionId', jsonl_path.stem)[:8]}",
             source="claude",
             messages=messages,
-            metadata=metadata,
+            metadata=SessionMetadata(
+                source_agent="claude",
+                original_session_id=first.get("sessionId", jsonl_path.stem),
+                project_path=first.get("cwd", ""),
+                model=model,
+                entrypoint=first.get("entrypoint", ""),
+                token_count=token_count,
+                version=first.get("version", ""),
+            ),
             created_at=created_at,
             updated_at=updated_at,
             tags=["claude"],
         )
 
     def inject(self, session: UniversalSession, project_path: str | None = None) -> Path:
-        """
-        Inject a UniversalSession vào Claude Code storage.
-        Returns path to the new session file.
-        """
-        import time
-        from datetime import datetime, timezone
-
         if not self.is_available():
             raise RuntimeError("Claude Code is not installed.")
 
-        projects_dir = self.base / "projects"
-        if not projects_dir.exists():
-            projects_dir.mkdir(parents=True, exist_ok=True)
+        cwd = project_path or session.metadata.project_path or os.getcwd()
+        target_dir = self.base / "projects" / _project_dir_name(cwd)
+        target_dir.mkdir(parents=True, exist_ok=True)
 
-        target_dir = Path(project_path) if project_path else None
-        if target_dir:
-            target_dir = projects_dir / target_dir.name
-        else:
-            target_dir = projects_dir / f"aimem-transfer-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        defaults = _detect_defaults(cwd)
+        version = session.metadata.version or defaults["version"]
+        git_branch = defaults["git_branch"] or _detect_git_branch(cwd)
+        entrypoint = defaults["entrypoint"] or "cli"
+        user_type = defaults["user_type"] or "external"
+        assistant_model = session.metadata.model or defaults["model"]
 
-        if not target_dir.exists():
-            target_dir.mkdir(parents=True, exist_ok=True)
-
-        new_session_id = session.id.replace("claude-", "").replace("gemini-", "").replace("qwen-", "")[:16]
+        new_session_id = str(uuid.uuid4())
         session_file = target_dir / f"{new_session_id}.jsonl"
+        base_time = datetime.now(timezone.utc)
+        first_uuid: str | None = None
+        parent_uuid: str | None = None
+        lines: list[dict] = []
+        index = 0
 
-        base_ts = datetime.now(timezone.utc).isoformat()
-        parent_uuid = None
+        for msg in session.messages:
+            if msg.role not in {"user", "assistant"}:
+                continue
+            message_uuid = msg.id or str(uuid.uuid4())
+            if first_uuid is None:
+                first_uuid = message_uuid
+            timestamp = _format_ts(msg.timestamp, base_time + timedelta(milliseconds=index))
+            index += 1
 
-        with open(session_file, "w", encoding="utf-8") as f:
-            first_msg = True
-            for msg in session.messages:
-                ts = msg.timestamp or base_ts
-                msg_uuid = msg.id or str(uuid.uuid4())
+            if msg.role == "user":
+                message_payload: dict = {
+                    "role": "user",
+                    "content": msg.content,
+                }
+            else:
+                message_payload = {
+                    "id": f"msg_{uuid.uuid4().hex[:24]}",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": msg.content}],
+                    "model": assistant_model,
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    },
+                    "service_tier": "standard",
+                }
 
-                if msg.role == "user":
-                    entry = {
-                        "type": "user",
-                        "uuid": msg_uuid,
-                        "timestamp": ts,
-                        "parentUuid": parent_uuid,
-                        "message": {
-                            "role": "user",
-                            "content": [{"type": "text", "text": msg.content}]
-                        }
-                    }
-                elif msg.role == "assistant":
-                    entry = {
-                        "type": "assistant",
-                        "uuid": msg_uuid,
-                        "timestamp": ts,
-                        "parentUuid": parent_uuid,
-                        "message": {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": msg.content}]
-                        }
-                    }
-                else:
-                    continue
+            lines.append({
+                "parentUuid": parent_uuid,
+                "isSidechain": False,
+                "type": "user" if msg.role == "user" else "assistant",
+                "message": message_payload,
+                "uuid": message_uuid,
+                "timestamp": timestamp,
+                "userType": user_type,
+                "entrypoint": entrypoint,
+                "cwd": cwd,
+                "sessionId": new_session_id,
+                "version": version,
+                "gitBranch": git_branch,
+            })
+            parent_uuid = message_uuid
 
-                if first_msg:
-                    entry["cwd"] = session.metadata.project_path or str(target_dir)
-                    entry["entrypoint"] = "aimem-transfer"
-                    first_msg = False
+        if not lines:
+            raise RuntimeError("Session has no user/assistant messages to inject.")
 
-                f.write(json.dumps(entry) + "\n")
-                parent_uuid = msg_uuid
+        snapshot = {
+            "type": "file-history-snapshot",
+            "messageId": first_uuid,
+            "snapshot": {
+                "messageId": first_uuid,
+                "trackedFileBackups": {},
+                "timestamp": lines[0]["timestamp"],
+            },
+            "isSnapshotUpdate": False,
+        }
+
+        with session_file.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+            for line in lines:
+                handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+        history_file = self.base / "history.jsonl"
+        with history_file.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "display": session.note or f"Transferred from {session.metadata.source_agent}",
+                "pastedContents": {},
+                "timestamp": int(datetime.now(timezone.utc).timestamp() * 1000),
+                "project": cwd,
+                "sessionId": new_session_id,
+            }, ensure_ascii=False) + "\n")
 
         return session_file

@@ -7,6 +7,7 @@ import argparse
 import sys
 import os
 import json
+import re
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────
@@ -17,7 +18,7 @@ from .adapters.claude import ClaudeAdapter
 from .adapters.qwen import QwenAdapter
 from .adapters.gemini import GeminiAdapter
 from .adapters.aider import AiderAdapter
-from .adapters.codex import CodexAdapter
+from .adapters.codex import CodexAdapter, extract_codex_session_id
 from .adapters.opencode import OpenCodeAdapter
 from .adapters.clipboard import ClipboardAdapter
 from .adapters.output import MarkdownOutput, ClaudeOutput, GeminiOutput, QwenOutput, PromptOutput, ContinueOutput, CodexOutput, OpenCodeOutput
@@ -39,6 +40,16 @@ try:
 except ImportError:
     def colored(text: str, color: str = "") -> str:
         return text
+
+
+if os.name == "nt":
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 
 def _ansi(text: str) -> str:
@@ -138,9 +149,44 @@ def _get_output_formatter(format: str):
         "prompt": PromptOutput,
         "continue": ContinueOutput,
         "codex": CodexOutput,
+        "opencode": OpenCodeOutput,
     }
     fmt = formatters.get(format, MarkdownOutput)
     return fmt()
+
+
+def _print_agent_summary(label: str, adapter, short_id: int = 8):
+    print(f"  {label}: {'[OK] Available' if adapter.is_available() else '[X] Not found'}")
+    if not adapter.is_available():
+        print()
+        return
+
+    sessions = adapter.list_sessions()
+    print(f"    Sessions found: {len(sessions)}")
+    for session in sessions[:3]:
+        title = session.get("title", "")
+        session_id = session.get("session_id", "")
+        short = f"{session_id[:short_id]}..." if session_id and len(session_id) > short_id else session_id
+        timestamp = _format_timestamp(session.get("timestamp", ""))
+        print(f"    - {short} ({timestamp}) | {title[:40]}")
+    print()
+
+
+def _extract_injected_session_id(target: str, injected_path: Path) -> str:
+    if target in {"claude", "qwen"}:
+        return injected_path.stem
+    if target == "gemini":
+        try:
+            data = json.loads(injected_path.read_text(encoding="utf-8"))
+            session_id = data.get("sessionId")
+            if isinstance(session_id, str) and session_id:
+                return session_id
+        except Exception:
+            pass
+        return injected_path.stem
+    if target == "codex":
+        return extract_codex_session_id(injected_path)
+    return injected_path.name
 
 
 # ─────────────────────────────────────────────────────────────
@@ -485,22 +531,34 @@ def cmd_load(args):
         print(info(f"Injecting session into {target} storage..."))
         try:
             injected_path = adapter.inject(session)
+            injected_session_id = _extract_injected_session_id(target, injected_path)
             print(success(f"Injected into {target}!"))
             print(f"  Path: {injected_path}")
+            print(f"  Session ID: {injected_session_id}")
             print(f"  Messages: {len(session.messages)}")
             print(f"  Tokens: ~{session.estimate_tokens():,}")
 
             # Show resume command based on target
-            resume_cmds = {
-                "claude": "claude --resume",
-                "gemini": "gemini --resume latest",
-                "qwen": "qwen --continue",
-                "opencode": f"opencode -s {injected_path}",
-                "codex": "codex --resume",
-            }
-            cmd = resume_cmds.get(target, target)
-            print(f"\nTo resume, run this command:")
-            print(f"  > {cmd}")
+            if target == "claude":
+                print(f"\nTo resume, run these commands:")
+                print(f"  > cd \"{session.metadata.project_path or os.getcwd()}\"")
+                print(f"  > claude -p --resume {injected_session_id} \"Your next prompt\"")
+            elif target == "codex":
+                print(f"\nTo resume, run these commands:")
+                print(f"  > codex exec resume {injected_session_id} \"Your next prompt\" --json")
+            elif target == "opencode":
+                print(f"\nTo resume, run this command:")
+                print(f"  > opencode run -s {injected_session_id} \"Your next prompt\"")
+            elif target == "gemini":
+                print(f"\nTo resume, run this command:")
+                print(f"  > cd \"{session.metadata.project_path or os.getcwd()}\"")
+                print(f"  > gemini --resume {injected_session_id} --output-format json -p \"Your next prompt\"")
+            elif target == "qwen":
+                print(f"\nTo resume, run this command:")
+                print(f"  > cd \"{session.metadata.project_path or os.getcwd()}\"")
+                print(f"  > qwen --resume {injected_session_id} --output-format json \"Your next prompt\"")
+            else:
+                print(f"\nTo resume, check the agent's documentation.")
             return
         except Exception as e:
             print(error(f"Failed to inject: {e}"))
@@ -640,90 +698,20 @@ def cmd_list_agents(args):
     print("\n* Checking available agents...")
     print()
 
-    # Claude
-    claude = ClaudeAdapter()
-    print(f"  Claude Code: {'[OK] Available' if claude.is_available() else '[X] Not found'}")
-    if claude.is_available():
-        sessions = claude.list_sessions()[:3]
-        all_sessions = claude.list_sessions()
-        print(f"    Sessions found: {len(all_sessions)}")
-        for s in sessions:
-            title = s.get("title", "")
-            print(f"    - {s['session_id'][:8]}... ({_format_timestamp(s['timestamp'])}) | {title[:40]}")
+    _print_agent_summary("Claude Code", ClaudeAdapter())
+    _print_agent_summary("Qwen CLI", QwenAdapter())
+    _print_agent_summary("Gemini CLI", GeminiAdapter())
+    _print_agent_summary("Codex CLI", CodexAdapter())
+    _print_agent_summary("Aider", AiderAdapter(), short_id=32)
 
-    print()
-
-    # Qwen
-    qwen = QwenAdapter()
-    print(f"  Qwen CLI: {'[OK] Available' if qwen.is_available() else '[X] Not found'}")
-    if qwen.is_available():
-        sessions = qwen.list_sessions()[:3]
-        all_sessions = qwen.list_sessions()
-        print(f"    Sessions found: {len(all_sessions)}")
-        for s in sessions:
-            title = s.get("title", "")
-            print(f"    - {s['session_id'][:8]}... ({_format_timestamp(s['timestamp'])}) | {title[:40]}")
-
-    print()
-
-    # Gemini
-    gemini = GeminiAdapter()
-    print(f"  Gemini CLI: {'[OK] Available' if gemini.is_available() else '[X] Not found'}")
-    if gemini.is_available():
-        sessions = gemini.list_sessions()[:3]
-        all_sessions = gemini.list_sessions()
-        print(f"    Sessions found: {len(all_sessions)}")
-        for s in sessions:
-            title = s.get("title", "")
-            print(f"    - {s['session_id'][:8]}... ({_format_timestamp(s['timestamp'])}) | {title[:40]}")
-
-    print()
-
-    # Aider
-    aider = AiderAdapter()
-    print(f"  Aider: {'[OK] Available' if aider.is_available() else '[X] Not found'}")
-    if aider.is_available():
-        sessions = aider.list_sessions()[:3]
-        all_sessions = aider.list_sessions()
-        print(f"    Sessions found: {len(all_sessions)}")
-        for s in sessions[:3]:
-            title = s.get("title", "")
-            print(f"    - {s['session_id']} | {title[:40]}")
-
-    print()
-
-    # Continue.dev
     from .adapters.continue_dev import ContinueAdapter
-    cont = ContinueAdapter()
-    print(f"  Continue.dev: {'[OK] Available' if cont.is_available() else '[X] Not found'}")
-    if cont.is_available():
-        sessions = cont.list_sessions()[:3]
-        all_sessions = cont.list_sessions()
-        print(f"    Sessions found: {len(all_sessions)}")
-        for s in sessions[:3]:
-            title = s.get("title", "")
-            print(f"    - {s['session_id'][:8]}... | {title[:40]}")
-
-    print()
+    _print_agent_summary("Continue.dev", ContinueAdapter())
 
     # Clipboard
     clip = ClipboardAdapter()
     print(f"  Clipboard: {'[OK] Available' if clip.is_available() else '[!]  Install pyperclip'}")
-
     print()
-
-    # OpenCode
-    opencode = OpenCodeAdapter()
-    print(f"  OpenCode: {'[OK] Available' if opencode.is_available() else '[X] Not found'}")
-    if opencode.is_available():
-        sessions = opencode.list_sessions()[:3]
-        all_sessions = opencode.list_sessions()
-        print(f"    Sessions found: {len(all_sessions)}")
-        for s in sessions:
-            title = s.get("title", "")
-            print(f"    - {s['session_id'][:8]}... ({_format_timestamp(s['timestamp'])}) | {title[:40]}")
-
-    print()
+    _print_agent_summary("OpenCode", OpenCodeAdapter())
 
 
 def cmd_config(args):

@@ -1,424 +1,374 @@
 """
-OpenCode Adapter - Đọc/ghi session từ OpenCode CLI.
-Storage: ~/.opencode/sessions/{session_id}.json
-Format: JSON với info, messages, parts.
+OpenCode Adapter - read/write sessions for OpenCode CLI.
+Reads via the real CLI/database storage under ~/.local/share/opencode.
 """
 
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from datetime import datetime, timezone
 from typing import Literal
+import hashlib
 import json
-import uuid
 import os
+import random
+import shutil
+import sqlite3
+import string
+import subprocess
+import uuid
 
 from ..models import UniversalSession, Message, SessionMetadata
 
 
-def _get_opencode_base() -> Path:
-    """Tìm thư mục gốc của OpenCode config."""
+def _get_opencode_db() -> Path:
     home = Path(os.path.expanduser("~"))
-    candidates = [
-        home / ".opencode",
-        home / "AppData" / "Local" / "opencode",
-        home / "AppData" / "Roaming" / "opencode",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return home / ".opencode"
+    return home / ".local" / "share" / "opencode" / "opencode.db"
 
 
-def _find_sessions_dir() -> Path:
-    """Tìm thư mục chứa sessions."""
-    base = _get_opencode_base()
-    sessions_dir = base / "sessions"
-    if sessions_dir.exists():
-        return sessions_dir
-    return base
-
-
-def _find_all_session_files() -> list[Path]:
-    """Tìm tất cả OpenCode session files."""
-    sessions_dir = _find_sessions_dir()
-    if not sessions_dir.exists():
-        return []
-
-    files = []
-    for json_file in sessions_dir.glob("ses_*.json"):
-        files.append(json_file)
-
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return files
+def _run_opencode(args: list[str]) -> subprocess.CompletedProcess[str]:
+    binary = (
+        shutil.which("opencode.cmd")
+        or shutil.which("opencode.exe")
+        or shutil.which("opencode")
+        or "opencode"
+    )
+    return subprocess.run(
+        [binary, *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
 
 
 def _generate_session_id() -> str:
-    """Generate OpenCode session ID format: ses_xxx."""
-    import random
-    import string
-    import time
     chars = string.ascii_letters + string.digits
-    random_part = ''.join(random.choices(chars, k=22))
-    return f"ses_{random_part}"
+    return "ses_" + "".join(random.choices(chars, k=22))
 
 
-def _generate_message_id(ts: int = None, seq: int = 0) -> str:
-    """Generate OpenCode message ID format: msg_<ulid_lowercase>."""
-    try:
-        import ulid
-        new_ulid = ulid.new()
-        return f"msg_{str(new_ulid).lower()}"
-    except ImportError:
-        import random
-        import string
-        import time
-        
-        if ts is None:
-            ts = int(time.time() * 1000)
-        
-        hex_ts = hex(ts)[2:13].zfill(11)[-11:]
-        chars = string.ascii_letters + string.digits
-        random_suffix = ''.join(random.choices(chars, k=14))
-        
-        return f"msg_{hex_ts}{seq % 10}{random_suffix}"
+def _generate_message_id(prefix: str) -> str:
+    chars = string.ascii_letters + string.digits
+    return prefix + "".join(random.choices(chars, k=22))
+
+
+def _project_id_for_directory(cur: sqlite3.Cursor, cwd: str, ts: int) -> str:
+    row = cur.execute(
+        "select id from project where worktree=? order by time_updated desc limit 1",
+        (cwd,),
+    ).fetchone()
+    if row:
+        return row[0]
+
+    project_id = hashlib.sha1(cwd.encode("utf-8", errors="replace")).hexdigest()
+    vcs = "git" if (Path(cwd) / ".git").exists() else None
+    cur.execute(
+        """
+        insert into project (
+            id, worktree, vcs, name, icon_url, icon_color,
+            time_created, time_updated, time_initialized, sandboxes, commands
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            cwd,
+            vcs,
+            None,
+            None,
+            None,
+            ts,
+            ts,
+            None,
+            "[]",
+            None,
+        ),
+    )
+    return project_id
+
+
+def _safe_slug(text: str) -> str:
+    cleaned = "".join(ch.lower() if ch.isalnum() else "-" for ch in text).strip("-")
+    return cleaned[:80] or "transferred-session"
+
+
+def _pick_model_info(session: UniversalSession) -> tuple[str, str]:
+    model = session.metadata.model or ""
+    lowered = model.lower()
+    if "ollama" in lowered:
+        return "ollama", model.split(":", 1)[-1] or model
+    if "openai" in lowered:
+        return "openai", model.split(":", 1)[-1] or model
+    if model:
+        return "opencode", model
+    return "opencode", "minimax-m2.5-free"
 
 
 class OpenCodeAdapter:
-    """Adapter để đọc/ghi session từ OpenCode CLI."""
-
     name = "opencode"
     description = "OpenCode CLI"
 
     def __init__(self):
-        self.base = _get_opencode_base()
+        self.db_path = _get_opencode_db()
 
     def is_available(self) -> bool:
-        """Kiểm tra OpenCode có được cài đặt không."""
-        return self.base.exists()
+        return self.db_path.exists()
 
     def list_sessions(self) -> list[dict]:
-        """List all available OpenCode sessions."""
+        if not self.is_available():
+            return []
+
         sessions = []
-        files = _find_all_session_files()
+        connection = sqlite3.connect(self.db_path)
+        try:
+            cursor = connection.cursor()
+            rows = cursor.execute(
+                """
+                select id, title, directory, time_created, time_updated
+                from session
+                where time_archived is null
+                order by time_updated desc
+                """
+            ).fetchall()
+        finally:
+            connection.close()
 
-        for f in files:
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-
-                info = data.get("info", {})
-                session_id = info.get("id", f.stem)
-                title = info.get("title", "")
-                timestamp = info.get("time", {}).get("updated", 0)
-                
-                if timestamp:
-                    try:
-                        ts = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
-                        timestamp_str = ts.isoformat()
-                    except Exception:
-                        timestamp_str = ""
-                else:
-                    timestamp_str = ""
-
-                messages = data.get("messages", [])
-                user_msgs = sum(1 for m in messages if m.get("info", {}).get("role") == "user")
-
-                sessions.append({
-                    "path": str(f),
-                    "session_id": session_id,
-                    "project": info.get("directory", "").split("/")[-1] if info.get("directory") else "",
-                    "cwd": info.get("directory", ""),
-                    "timestamp": timestamp_str,
-                    "user_messages": user_msgs,
-                    "total_messages": len(messages),
-                    "title": title,
-                })
-            except Exception:
-                continue
-
+        for session_id, title, directory, created, updated in rows:
+            timestamp = datetime.fromtimestamp(updated / 1000, tz=timezone.utc).isoformat() if updated else ""
+            sessions.append({
+                "path": session_id,
+                "session_id": session_id,
+                "project": Path(directory or "").name,
+                "cwd": directory or "",
+                "timestamp": timestamp,
+                "title": title or "",
+            })
         return sessions
 
     def export(self, session_path: str | None = None, session_id: str | None = None) -> UniversalSession:
-        """Export an OpenCode session to UniversalSession format."""
         if not self.is_available():
             raise RuntimeError("OpenCode CLI is not installed.")
 
-        target_path = None
-
-        if session_path:
-            target_path = Path(session_path)
-        elif session_id:
-            files = _find_all_session_files()
-            for f in files:
-                if session_id in f.stem or f.stem == session_id:
-                    target_path = f
-                    break
-            if not target_path:
-                raise FileNotFoundError(f"Session not found: {session_id}")
-        else:
-            files = _find_all_session_files()
-            if not files:
+        target_session = session_id or session_path
+        if not target_session:
+            sessions = self.list_sessions()
+            if not sessions:
                 raise RuntimeError("No OpenCode sessions found.")
-            target_path = files[0]
+            target_session = sessions[0]["session_id"]
 
-        with open(target_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        result = _run_opencode(["export", str(target_session)])
+        if result.returncode != 0:
+            stderr = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(stderr or f"Failed to export OpenCode session: {target_session}")
+
+        try:
+            data = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Unexpected OpenCode export output: {exc}") from exc
 
         info = data.get("info", {})
         messages_data = data.get("messages", [])
+        messages: list[Message] = []
 
-        messages = []
         for msg in messages_data:
             msg_info = msg.get("info", {})
-            role: Literal["system", "user", "assistant"] = msg_info.get("role", "user")
-            
-            parts = msg.get("parts", [])
-            content_parts = []
-            for part in parts:
-                if part.get("type") == "text":
-                    text = part.get("text", "")
-                    if not part.get("synthetic"):
-                        content_parts.append(text)
+            role_raw = msg_info.get("role", "user")
+            role: Literal["system", "user", "assistant"] = "user"
+            if role_raw == "assistant":
+                role = "assistant"
+            elif role_raw in ("system", "developer"):
+                role = "system"
 
-            content = "\n".join(content_parts)
-            if not content.strip():
+            content_parts: list[str] = []
+            tool_calls: list[dict] = []
+            for part in msg.get("parts", []):
+                part_type = part.get("type")
+                if part_type == "text":
+                    text = part.get("text", "")
+                    if text and not part.get("synthetic"):
+                        content_parts.append(text)
+                elif part_type == "reasoning":
+                    text = part.get("text", "")
+                    if text:
+                        content_parts.append(f"[Thinking: {text}]")
+                elif part_type == "tool":
+                    tool = part.get("tool", "")
+                    if tool:
+                        content_parts.append(f"[Tool: {tool}]")
+                    tool_calls.append(part)
+
+            content = "\n".join(part for part in content_parts if part).strip()
+            if not content and not tool_calls:
                 continue
+
+            created = msg_info.get("time", {}).get("created")
+            timestamp = ""
+            if isinstance(created, (int, float)):
+                timestamp = datetime.fromtimestamp(created / 1000, tz=timezone.utc).isoformat()
 
             messages.append(Message(
                 id=msg_info.get("id", str(uuid.uuid4())),
                 role=role,
                 content=content,
-                timestamp="",
-                metadata={}
+                timestamp=timestamp,
+                tool_calls=tool_calls,
+                metadata={
+                    "parent_id": msg_info.get("parentID"),
+                    "agent": msg_info.get("agent"),
+                    "mode": msg_info.get("mode"),
+                    "provider_id": msg_info.get("providerID") or msg_info.get("model", {}).get("providerID"),
+                    "model_id": msg_info.get("modelID") or msg_info.get("model", {}).get("modelID"),
+                },
             ))
 
-        session_id_meta = info.get("id", target_path.stem)
-        cwd = info.get("directory", "")
-        title = info.get("title", "")
-
-        token_count = sum(len(m.content) for m in messages) // 4
-
         created_ts = info.get("time", {}).get("created", 0)
-        created_at = ""
-        if created_ts:
-            try:
-                created_at = datetime.fromtimestamp(created_ts / 1000, tz=timezone.utc).isoformat()
-            except Exception:
-                pass
+        updated_ts = info.get("time", {}).get("updated", 0)
+        created_at = datetime.fromtimestamp(created_ts / 1000, tz=timezone.utc).isoformat() if created_ts else ""
+        updated_at = datetime.fromtimestamp(updated_ts / 1000, tz=timezone.utc).isoformat() if updated_ts else ""
 
         return UniversalSession(
-            id=f"opencode-{session_id_meta[:8]}",
+            id=f"opencode-{info.get('id', str(target_session))[:8]}",
             source="opencode",
             messages=messages,
             metadata=SessionMetadata(
                 source_agent="opencode",
-                original_session_id=session_id_meta,
-                project_path=cwd,
-                token_count=token_count,
+                original_session_id=info.get("id", str(target_session)),
+                project_path=info.get("directory", ""),
+                token_count=sum(len(message.content) for message in messages) // 4,
+                version=info.get("version", ""),
             ),
             created_at=created_at,
-            updated_at=created_at,
+            updated_at=updated_at,
             tags=["opencode"],
-            note=title,
+            note=info.get("title", ""),
         )
 
     def inject(self, session: UniversalSession) -> Path:
-        """
-        Inject a UniversalSession vào OpenCode storage.
-        Uses direct database insert (bypasses opencode import bug).
-        Returns path to the exported file.
-        """
-        import subprocess
-        import shutil
-        import sqlite3
-        import json as json_lib
-
-        tmp_dir = Path.home() / ".aimem" / "tmp"
-        if not tmp_dir.exists():
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        new_session_id = _generate_session_id()
-        ts = int(datetime.now(timezone.utc).timestamp() * 1000)
+        if not self.is_available():
+            raise RuntimeError("OpenCode CLI is not installed.")
 
         cwd = session.metadata.project_path or os.getcwd()
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        new_session_id = _generate_session_id()
+        provider_id, model_id = _pick_model_info(session)
+        title = session.note or f"Transferred from {session.metadata.source_agent}"
+        slug = _safe_slug(title)
+        message_rows: list[tuple[str, int, int, str]] = []
+        part_rows: list[tuple[str, str, int, int, str]] = []
+        previous_id: str | None = None
 
-        # First, create the export file (for backup)
-        messages_data = []
-        prev_msg_id = None
-        msg_ids = []  # Store msg_ids for DB insert
+        current_time = now_ms
+        for msg in session.messages:
+            if msg.role not in ("user", "assistant"):
+                continue
 
-        for i, msg in enumerate(session.messages):
-            msg_ts = ts + i * 1000
-            msg_id = _generate_message_id(msg_ts, i)
-            msg_ids.append(msg_id)
-
-            parts = []
-            if msg.content.strip():
-                parts.append({
-                    "type": "text",
-                    "text": msg.content,
-                })
-
+            created = current_time
+            current_time += 1000
+            updated = current_time
+            message_id = _generate_message_id("msg_")
             if msg.role == "user":
-                msg_info = {
+                data = {
                     "role": "user",
-                    "time": {"created": msg_ts},
+                    "time": {"created": created},
                     "agent": "build",
                     "model": {
-                        "providerID": "opencode",
-                        "modelID": "minimax-m2.5-free"
+                        "providerID": provider_id,
+                        "modelID": model_id,
                     },
                     "summary": {"diffs": []},
                 }
             else:
-                msg_info = {
+                data = {
                     "role": "assistant",
                     "mode": "build",
                     "agent": "build",
-                    "path": {
-                        "cwd": cwd,
-                        "root": "/"
-                    },
+                    "path": {"cwd": cwd, "root": cwd},
                     "cost": 0,
                     "tokens": {
                         "total": 0,
                         "input": 0,
                         "output": 0,
                         "reasoning": 0,
-                        "cache": {"write": 0, "read": 0}
+                        "cache": {"read": 0, "write": 0},
                     },
-                    "modelID": "minimax-m2.5-free",
-                    "providerID": "opencode",
-                    "time": {"created": msg_ts, "completed": msg_ts + 1000},
+                    "modelID": model_id,
+                    "providerID": provider_id,
+                    "time": {"created": created, "completed": updated},
                     "finish": "stop",
                 }
+            if previous_id:
+                data["parentID"] = previous_id
 
-            # Add parentID only for messages after the first
-            if prev_msg_id is not None:
-                msg_info["parentID"] = prev_msg_id
+            message_rows.append((message_id, created, updated, json.dumps(data, ensure_ascii=False)))
 
-            messages_data.append({
-                "msg_id": msg_id,
-                "msg_ts": msg_ts,
-                "info": msg_info,
-                "parts": parts,
-            })
-            prev_msg_id = msg_id
-
-        session_info = {
-            "id": new_session_id,
-            "slug": f"transferred-from-{session.metadata.source_agent}",
-            "projectID": "global",
-            "directory": cwd,
-            "title": session.note or f"Transferred from {session.metadata.source_agent}",
-            "version": "1.14.18",
-            "summary": {"additions": 0, "deletions": 0, "files": 0},
-            "time": {"created": ts, "updated": ts},
-        }
-
-        # Direct database insert (bypass opencode import)
-        db_path = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
-
-        if not db_path.exists():
-            db_path = Path(os.environ.get('APPDATA', '')) / "opencode" / "opencode.db"
-
-        if not db_path.exists():
-            db_path = Path.home() / "AppData" / "Roaming" / "opencode" / "opencode.db"
-
-        try:
-            conn = sqlite3.connect(str(db_path))
-            c = conn.cursor()
-
-            # Look up project_id based on directory
-            c.execute("SELECT id FROM project WHERE worktree = ?", (cwd,))
-            project_row = c.fetchone()
-            if project_row:
-                project_id = project_row[0]
-            else:
-                # Create new project if not exists
-                import hashlib
-                project_id = hashlib.sha1(cwd.encode()).hexdigest()[:40]
-                c.execute('''
-                    INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes, commands)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (project_id, cwd, "git", None, ts, ts, "[]", None))
-
-            # Insert session - include summary fields
-            c.execute('''
-                INSERT INTO session (id, project_id, slug, directory, title, version,
-                                    summary_additions, summary_deletions, summary_files,
-                                    time_created, time_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                new_session_id,
-                project_id,
-                session_info["slug"],
-                session_info["directory"],
-                session_info["title"],
-                session_info["version"],
-                0, 0, 0,
-                ts, ts
-            ))
-
-            # Insert messages
-            for msg_data in messages_data:
-                msg_id = msg_data["msg_id"]
-                msg_ts = msg_data["msg_ts"]
-                info = msg_data["info"]
-                parts = msg_data["parts"]
-
-                c.execute('''
-                    INSERT INTO message (id, session_id, time_created, time_updated, data)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (
-                    msg_id,
-                    new_session_id,
-                    msg_ts,
-                    msg_ts,
-                    json_lib.dumps(info)
+            text = (msg.content or "").strip()
+            if text:
+                part_rows.append((
+                    _generate_message_id("prt_"),
+                    message_id,
+                    created,
+                    created,
+                    json.dumps({"type": "text", "text": text}, ensure_ascii=False),
                 ))
 
-                for part in parts:
-                    part_id = f"prt_{uuid.uuid4().hex[:22]}"
-                    c.execute('''
-                        INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (
-                        part_id,
-                        msg_id,
-                        new_session_id,
-                        msg_ts,
-                        msg_ts,
-                        json_lib.dumps(part)
-                    ))
+            previous_id = message_id
 
-            conn.commit()
-            conn.close()
+        if not message_rows:
+            raise RuntimeError("Session has no user/assistant messages to inject.")
 
-            return Path(new_session_id)
+        final_updated = message_rows[-1][2]
+        version = session.metadata.version or "1.14.19"
 
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            # Fallback to file export if DB insert fails
-            session_data = {
-                "info": session_info,
-                "messages": messages_data,
-            }
-            export_file = tmp_dir / f"opencode-import-{new_session_id}.json"
-            with open(export_file, "w", encoding="utf-8") as f:
-                json_lib.dump(session_data, f, indent=2)
+        connection = sqlite3.connect(self.db_path)
+        try:
+            cursor = connection.cursor()
+            project_id = _project_id_for_directory(cursor, cwd, now_ms)
+            cursor.execute(
+                """
+                insert into session (
+                    id, project_id, parent_id, slug, directory, title, version, share_url,
+                    summary_additions, summary_deletions, summary_files, summary_diffs, revert,
+                    permission, time_created, time_updated, time_compacting, time_archived, workspace_id
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_session_id,
+                    project_id,
+                    None,
+                    slug,
+                    cwd,
+                    title,
+                    version,
+                    None,
+                    0,
+                    0,
+                    0,
+                    None,
+                    None,
+                    None,
+                    message_rows[0][1],
+                    final_updated,
+                    None,
+                    None,
+                    None,
+                ),
+            )
 
-            try:
-                opencode_exe = shutil.which("opencode")
-                if opencode_exe:
-                    subprocess.run(
-                        [opencode_exe, "import", str(export_file)],
-                        capture_output=True,
-                        timeout=60,
-                        cwd=cwd,
-                        shell=True
-                    )
-            except Exception:
-                pass
+            for message_id, created, updated, data in message_rows:
+                cursor.execute(
+                    "insert into message (id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?)",
+                    (message_id, new_session_id, created, updated, data),
+                )
 
-            return export_file
+            for part_id, message_id, created, updated, data in part_rows:
+                cursor.execute(
+                    "insert into part (id, message_id, session_id, time_created, time_updated, data) values (?, ?, ?, ?, ?, ?)",
+                    (part_id, message_id, new_session_id, created, updated, data),
+                )
+
+            connection.commit()
+        finally:
+            connection.close()
+
+        return Path(new_session_id)
