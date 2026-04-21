@@ -55,19 +55,30 @@ pip install -e .
 
 ## ✨ Features
 
+- 🎮 **Interactive TUI**: Fully featured Terminal UI with arrow-key navigation
 - 📤 **Save** sessions from Claude, Gemini, Qwen, OpenCode, Codex, Aider, Continue.dev
 - 📥 **Load** to any AI agent with proper format
-- 💉 **Inject** directly into agent storage (no copy-paste!)
+- 💉 **Inject** directly into agent storage (auto-opens new terminal to resume!)
 - 📊 **Analyze** if session fits target model context limit
 - ✂️ **Chunk** large sessions automatically
-- 🗜️ **Compress** sessions with LLM (95% reduction)
-- 🔀 **Merge** multiple sessions
+- 🗜️ **Compress** sessions with LLM (95% reduction, configurable via TUI settings)
+- 🔀 **Merge** multiple sessions (Smart deduplication)
+- 🗑️ **Multi-Delete**: Select and delete multiple sessions easily via TUI
 
 ---
 
 ## ⚡ Quick Start
 
-### Transfer from Claude to OpenCode (Recommended)
+### 🎮 Interactive Mode (TUI - Recommended)
+The easiest way to use AiMem is via the interactive Terminal UI. Just run:
+```bash
+aimem-cli
+```
+*Use arrow keys to navigate menus, configure settings, compress sessions, and transfer context without remembering any commands!*
+
+---
+
+### Transfer from Claude to OpenCode (CLI)
 ```bash
 # Save current Claude session
 aimem-cli save --from claude

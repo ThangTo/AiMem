@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aimem-cli"
-version = "0.2.4"
+version = "0.2.6"
 description = "AI Memory Switcher — Save, compress, and transfer context between AI agents"
 readme = "README.md"
 license = {text = "MIT"}
@@ -29,6 +29,8 @@ urls = { Homepage = "https://github.com/ThangTo/AiMem", Repository = "https://gi
 dependencies = [
     "pyperclip>=1.8.0",
     "ulid-py>=1.1.0",
+    "questionary>=2.1.1",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]

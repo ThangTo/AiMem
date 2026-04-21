@@ -559,13 +559,18 @@ def cmd_load(args):
                 print(f"  > qwen --resume {injected_session_id} --output-format json \"Your next prompt\"")
             else:
                 print(f"\nTo resume, check the agent's documentation.")
-            return
+            
+            return {
+                "target": target,
+                "injected_session_id": injected_session_id,
+                "project_path": session.metadata.project_path or os.getcwd()
+            }
         except Exception as e:
             print(error(f"Failed to inject: {e}"))
             if os.environ.get("AIMEM_DEBUG"):
                 import traceback
                 traceback.print_exc()
-            return
+            return None
 
     # Get formatter - --to takes priority over --format
     format = args.to_agent or args.target or args.format or load_config().get("output", {}).get("format", "markdown")
@@ -786,6 +791,17 @@ def cmd_delete(args):
 # ─────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if not argv:
+        try:
+            from .tui import run_tui
+            run_tui()
+            return
+        except ImportError:
+            pass  # Fallback to argparse help
+
     parser = argparse.ArgumentParser(
         prog="aimem",
         description="AiMem - AI Memory Switcher. Save, compress, and transfer context between AI agents.",
@@ -883,7 +899,7 @@ Repository: https://github.com/aimem/aimem
 
     # Run
     try:
-        args.func(args)
+        return args.func(args)
     except KeyboardInterrupt:
         print("\nAborted.")
     except Exception as e:
