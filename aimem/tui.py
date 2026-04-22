@@ -15,6 +15,8 @@ from .adapters.codex import CodexAdapter
 from .adapters.opencode import OpenCodeAdapter
 from .adapters.aider import AiderAdapter
 from .adapters.clipboard import ClipboardAdapter
+from .adapters.cursor import CursorAdapter
+from .adapters.antigravity import AntigravityAdapter
 
 console = Console()
 
@@ -35,6 +37,8 @@ def get_available_agents(for_save=True):
     if QwenAdapter().is_available(): agents.append("qwen")
     if OpenCodeAdapter().is_available(): agents.append("opencode")
     if CodexAdapter().is_available(): agents.append("codex")
+    if CursorAdapter().is_available(): agents.append("cursor")
+    if AntigravityAdapter().is_available(): agents.append("antigravity")
     if for_save and AiderAdapter().is_available(): agents.append("aider")
     if for_save: agents.append("clipboard")
     return agents
@@ -167,7 +171,7 @@ def menu_load():
             new_id = result["injected_session_id"]
             proj_path = result.get("project_path", "")
             
-            if questionary.confirm("Do you want to open this session now in a new terminal?").ask():
+            if questionary.confirm(f"Do you want to open/resume this session now in {target_agent.capitalize()}?").ask():
                 import subprocess
                 import os
                 
@@ -182,7 +186,66 @@ def menu_load():
                 elif target_agent == "qwen":
                     cmd = f"qwen --resume {new_id}"
                 elif target_agent == "codex":
-                    cmd = f"codex exec resume {new_id}"
+                    choice = questionary.select(
+                        "How do you want to resume this Codex session?",
+                        choices=["💻 In Terminal (CLI)", "📝 In VS Code Extension"]
+                    ).ask()
+                    
+                    if choice == "💻 In Terminal (CLI)":
+                        if os.name == "nt":
+                            cmd = f"Write-Host 'Codex CLI requires the prompt in the command.' -ForegroundColor Yellow; Write-Host 'To resume, type:' -ForegroundColor Cyan; Write-Host 'codex exec resume {new_id} ''Your prompt here''' -ForegroundColor Green"
+                        else:
+                            cmd = f"echo 'Codex CLI requires the prompt in the command.'; echo 'To resume, type:'; echo 'codex exec resume {new_id} \"Your prompt here\"'"
+                    elif choice == "📝 In VS Code Extension":
+                        console.print("[green]Launching VS Code... Open the Codex extension sidebar to view the session![/green]")
+                        import os
+                        if os.name == "nt":
+                            try:
+                                if proj_path:
+                                    # Use os.system with code command to let CMD resolve code.cmd and handle IPC correctly
+                                    os.system(f'code "{proj_path}"')
+                                else:
+                                    os.system('code')
+                            except Exception as e:
+                                console.print(f"[red]Failed to launch VS Code: {e}[/red]")
+                        else:
+                            import shutil
+                            import subprocess
+                            code_exe = shutil.which("code") or "code"
+                            try:
+                                if proj_path:
+                                    subprocess.Popen([code_exe, proj_path])
+                                else:
+                                    subprocess.Popen([code_exe])
+                            except Exception as e:
+                                console.print(f"[red]Failed to launch VS Code: {e}[/red]")
+                        cmd = ""
+                elif target_agent == "cursor":
+                    # Launch Cursor IDE directly since it's a GUI app, not a CLI
+                    console.print("[green]Launching Cursor IDE... Check your Composer history![/green]")
+                    import shutil
+                    if os.name == "nt":
+                        cursor_exe = shutil.which("cursor.cmd") or shutil.which("cursor.exe") or "cursor"
+                        try:
+                            CREATE_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+                            if proj_path:
+                                subprocess.Popen([cursor_exe, proj_path], shell=False, creationflags=CREATE_NO_WINDOW)
+                            else:
+                                subprocess.Popen([cursor_exe], shell=False, creationflags=CREATE_NO_WINDOW)
+                        except Exception as e:
+                            console.print(f"[red]Failed to launch Cursor: {e}[/red]")
+                    else:
+                        import subprocess
+                        cursor_exe = shutil.which("cursor") or "cursor"
+                        try:
+                            if proj_path:
+                                subprocess.Popen([cursor_exe, proj_path])
+                            else:
+                                subprocess.Popen([cursor_exe])
+                        except Exception as e:
+                            console.print(f"[red]Failed to launch Cursor: {e}[/red]")
+                    # Leave cmd empty so it doesn't open a powershell terminal
+                    cmd = ""
                 
                 if cmd:
                     if os.name == "nt":
@@ -192,12 +255,10 @@ def menu_load():
                         has_wt = shutil.which("wt")
                         
                         if has_wt:
-                            # Use list format to avoid CMD quoting hell
-                            wt_args = ["wt"]
                             if proj_path:
-                                wt_args.extend(["-d", proj_path])
-                            wt_args.extend(["powershell", "-NoExit", "-Command", cmd])
-                            subprocess.Popen(wt_args)
+                                subprocess.Popen(f'wt -d "{proj_path}" powershell -NoExit -Command "{cmd}"', shell=True)
+                            else:
+                                subprocess.Popen(f'wt powershell -NoExit -Command "{cmd}"', shell=True)
                         else:
                             # Fallback to standard PowerShell in a new window
                             if proj_path:

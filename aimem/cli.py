@@ -21,6 +21,7 @@ from .adapters.aider import AiderAdapter
 from .adapters.codex import CodexAdapter, extract_codex_session_id
 from .adapters.opencode import OpenCodeAdapter
 from .adapters.clipboard import ClipboardAdapter
+from .adapters.cursor import CursorAdapter
 from .adapters.output import MarkdownOutput, ClaudeOutput, GeminiOutput, QwenOutput, PromptOutput, ContinueOutput, CodexOutput, OpenCodeOutput
 from .storage import FileStorage, load_config, save_config, _get_config_path, DEFAULT_CONFIG
 from .models import UniversalSession
@@ -340,6 +341,31 @@ def cmd_save(args):
             print(error("Continue.dev not found. Is it installed?"))
             return
         session = adapter.export(session_id=args.session_id)
+    elif source == "cursor":
+        adapter = CursorAdapter()
+        if not adapter.is_available():
+            print(error("Cursor CLI/storage not found. Is it installed?"))
+            return
+        session_id = args.session_id
+        if not session_id:
+            sessions = adapter.list_sessions()
+            if not sessions:
+                print(error("No Cursor sessions found."))
+                return
+            if len(sessions) == 1:
+                session_id = sessions[0]["session_id"]
+            else:
+                print(info(f"Found {len(sessions)} Cursor sessions. Select one:"))
+                for i, s in enumerate(sessions[:10], 1):
+                    ts = _format_timestamp(s.get("timestamp", ""))
+                    print(f"  [{i}] {ts} | {s.get('title', '(no title)')[:50]}")
+                try:
+                    choice = input("  Enter number (default=1): ").strip()
+                    idx = int(choice) - 1 if choice else 0
+                    session_id = sessions[max(0, min(idx, len(sessions)-1))]["session_id"]
+                except (ValueError, EOFError):
+                    session_id = sessions[0]["session_id"]
+        session = adapter.export(session_id=session_id)
     elif source == "opencode":
         adapter = OpenCodeAdapter()
         if not adapter.is_available():
@@ -514,6 +540,7 @@ def cmd_load(args):
             "qwen": QwenAdapter,
             "codex": CodexAdapter,
             "opencode": OpenCodeAdapter,
+            "cursor": CursorAdapter,
         }
 
         if target not in inject_targets:
@@ -544,8 +571,9 @@ def cmd_load(args):
                 print(f"  > cd \"{session.metadata.project_path or os.getcwd()}\"")
                 print(f"  > claude -p --resume {injected_session_id} \"Your next prompt\"")
             elif target == "codex":
-                print(f"\nTo resume, run these commands:")
-                print(f"  > codex exec resume {injected_session_id} \"Your next prompt\" --json")
+                print(f"\nTo resume in terminal, run:")
+                print(f"  > codex exec resume {injected_session_id} \"Your prompt here\"")
+                print(f"Or open VS Code to use the Codex extension.")
             elif target == "opencode":
                 print(f"\nTo resume, run this command:")
                 print(f"  > opencode run -s {injected_session_id} \"Your next prompt\"")
@@ -557,6 +585,8 @@ def cmd_load(args):
                 print(f"\nTo resume, run this command:")
                 print(f"  > cd \"{session.metadata.project_path or os.getcwd()}\"")
                 print(f"  > qwen --resume {injected_session_id} --output-format json \"Your next prompt\"")
+            elif target == "cursor":
+                print(f"\nTo resume, open Cursor IDE and check your Composer history.")
             else:
                 print(f"\nTo resume, check the agent's documentation.")
             
@@ -707,6 +737,7 @@ def cmd_list_agents(args):
     _print_agent_summary("Qwen CLI", QwenAdapter())
     _print_agent_summary("Gemini CLI", GeminiAdapter())
     _print_agent_summary("Codex CLI", CodexAdapter())
+    _print_agent_summary("Cursor", CursorAdapter())
     _print_agent_summary("Aider", AiderAdapter(), short_id=32)
 
     from .adapters.continue_dev import ContinueAdapter
@@ -794,13 +825,24 @@ def main(argv: list[str] | None = None):
     if argv is None:
         argv = sys.argv[1:]
 
-    if not argv:
+    # Remove aimem_main.py or aimem-cli from argv if somehow passed
+    if argv and (argv[0].endswith('.py') or 'aimem' in argv[0]):
+        argv = argv[1:]
+
+    if len(argv) == 0:
         try:
             from .tui import run_tui
             run_tui()
             return
-        except ImportError:
+        except ImportError as e:
+            print(error(f"TUI dependencies not found ({e}). Run: pip install questionary rich"))
             pass  # Fallback to argparse help
+        except Exception as e:
+            print(error(f"Error starting TUI: {e}"))
+            if os.environ.get("AIMEM_DEBUG"):
+                import traceback
+                traceback.print_exc()
+            return
 
     parser = argparse.ArgumentParser(
         prog="aimem",
@@ -829,7 +871,7 @@ Repository: https://github.com/aimem/aimem
         """
     )
 
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
     # init
     p_init = subparsers.add_parser("init", help="Initialize AiMem config")
@@ -838,7 +880,7 @@ Repository: https://github.com/aimem/aimem
 
     # save
     p_save = subparsers.add_parser("save", help="Save session from an agent")
-    p_save.add_argument("--from", dest="from_agent", choices=["claude", "gemini", "qwen", "aider", "continue", "codex", "opencode", "clipboard"],
+    p_save.add_argument("--from", dest="from_agent", choices=["claude", "gemini", "qwen", "aider", "continue", "codex", "opencode", "clipboard", "cursor"],
                        help="Source agent")
     p_save.add_argument("--source", dest="source", help="Alias for --from")
     p_save.add_argument("--session-id", help="Specific session ID to export")
@@ -851,10 +893,10 @@ Repository: https://github.com/aimem/aimem
     p_load = subparsers.add_parser("load", help="Load session for target agent")
     p_load.add_argument("session_id", nargs="?", help="Session ID to load")
     p_load.add_argument("--id", help="Alias for session_id")
-    p_load.add_argument("--to", dest="to_agent", choices=["claude", "gemini", "qwen", "codex", "opencode", "markdown", "continue", "prompt"],
+    p_load.add_argument("--to", dest="to_agent", choices=["claude", "gemini", "qwen", "codex", "opencode", "markdown", "continue", "prompt", "cursor"],
                        help="Target agent format")
     p_load.add_argument("--target", help="Alias for --to")
-    p_load.add_argument("--format", "-f", choices=["markdown", "claude", "gemini", "qwen", "codex", "opencode", "prompt", "continue"],
+    p_load.add_argument("--format", "-f", choices=["markdown", "claude", "gemini", "qwen", "codex", "opencode", "prompt", "continue", "cursor"],
                        help="Output format (default: markdown)")
     p_load.add_argument("--output", "-o", help="Write to file instead of stdout")
     p_load.add_argument("--copy", action="store_true", help="Copy output to clipboard")
@@ -896,6 +938,10 @@ Repository: https://github.com/aimem/aimem
 
     # Parse
     args = parser.parse_args(argv)
+
+    if not hasattr(args, "func"):
+        parser.print_help()
+        return
 
     # Run
     try:
