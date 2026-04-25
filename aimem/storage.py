@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
         "enabled": False,
         "provider": "groq",  # "groq" | "gemini"
         "api_key": None,
-        "model": "llama-3.1-8b-instant",
+        "model": "meta-llama/llama-4-scout-17b-16e-instruct",
     },
     "adapters": {
         "claude": {"enabled": True, "auto_detect": True},

@@ -25,7 +25,7 @@ from .adapters.cursor import CursorAdapter
 from .adapters.output import MarkdownOutput, ClaudeOutput, GeminiOutput, QwenOutput, PromptOutput, ContinueOutput, CodexOutput, OpenCodeOutput
 from .storage import FileStorage, load_config, save_config, _get_config_path, DEFAULT_CONFIG
 from .models import UniversalSession
-from .compression import CompressionEngine
+from .compression import CompressionEngine, get_default_compression_model, list_compression_models
 from .context_manager import (
     get_load_advice, print_load_advice, chunk_session,
     merge_sessions, auto_trim, AGENT_LIMITS,
@@ -188,6 +188,69 @@ def _extract_injected_session_id(target: str, injected_path: Path) -> str:
     if target == "codex":
         return extract_codex_session_id(injected_path)
     return injected_path.name
+
+
+def _read_codex_injected_model(injected_path: Path) -> str:
+    try:
+        with injected_path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                entry = json.loads(line)
+                if entry.get("type") != "session_meta":
+                    continue
+                payload = entry.get("payload", {})
+                model = payload.get("model", "")
+                return model if isinstance(model, str) else ""
+    except Exception:
+        return ""
+    return ""
+
+
+def _read_codex_default_model() -> str:
+    config_file = Path.home() / ".codex" / "config.toml"
+    if not config_file.exists():
+        return ""
+    try:
+        for raw_line in config_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line.startswith("model") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key.strip() != "model":
+                continue
+            return value.strip().strip('"').strip("'")
+    except OSError:
+        return ""
+    return ""
+
+
+def _compression_requested(args, config: dict) -> bool:
+    if getattr(args, "compress", False) and getattr(args, "no_compress", False):
+        raise ValueError("--compress and --no-compress cannot be used together.")
+    if getattr(args, "no_compress", False):
+        return False
+    return bool(getattr(args, "compress", False) or config.get("compression", {}).get("enabled", False))
+
+
+def _apply_compression_overrides(config: dict, args) -> dict:
+    compression = config.setdefault("compression", {})
+    provider_override = getattr(args, "compression_provider", None)
+    model_override = getattr(args, "compression_model", None)
+    previous_provider = compression.get("provider")
+
+    if provider_override:
+        compression["provider"] = provider_override
+
+    provider = compression.get("provider") or "groq"
+    if model_override:
+        compression["model"] = model_override
+    elif provider_override and provider_override != previous_provider:
+        compression["model"] = get_default_compression_model(provider)
+    elif not compression.get("model"):
+        compression["model"] = get_default_compression_model(provider)
+
+    return config
 
 
 # ─────────────────────────────────────────────────────────────
@@ -426,17 +489,25 @@ def cmd_save(args):
             print(f"  Dropped: {', '.join(unique_drops[:5])}")
 
     # Compression (opt-in via --compress flag OR compression.enabled in config)
-    should_compress = args.compress or load_config().get("compression", {}).get("enabled", False)
+    config = load_config()
+    try:
+        should_compress = _compression_requested(args, config)
+    except ValueError as exc:
+        print(error(str(exc)))
+        return
 
     if should_compress:
-        config = load_config()
+        config = _apply_compression_overrides(config, args)
+        if args.compress:
+            config.setdefault("compression", {})["enabled"] = True
         engine = CompressionEngine(config)
 
         if not engine.is_configured():
             print(warn("Compression requires API key. Set with:"))
-            print("  aimem config set compression.enabled true")
             print("  aimem config set compression.api_key YOUR_KEY")
             print("  aimem config set compression.provider groq")
+            print("  aimem save --from <agent> --compress")
+            print("Tip: only enable compression.enabled if you want compression to run automatically.")
         else:
             print(info("Compressing session..."))
             original_tokens = session.estimate_tokens()
@@ -489,15 +560,19 @@ def cmd_load(args):
 
     # Context analysis before load
     if args.analyze:
-        advice = get_load_advice(session, target)
+        model_override = getattr(args, "opencode_model", None) if target == "opencode" else None
+        advice = get_load_advice(session, target, model=model_override)
         print_load_advice(advice)
 
     # Smart chunking if session too large
     if args.chunk:
-        advice = get_load_advice(session, target)
+        model_override = getattr(args, "opencode_model", None) if target == "opencode" else None
+        advice = get_load_advice(session, target, model=model_override)
         if not advice.will_fit:
-            result = chunk_session(session, target)
+            result = chunk_session(session, target, model=model_override)
             if result.chunks:
+                if result.dropped_messages:
+                    print(warn(f"Dropped {result.dropped_messages} older messages while chunking."))
                 for i, chunk in enumerate(result.chunks, 1):
                     print(f"\n{'='*60}")
                     print(f"📦 CHUNK {i}/{len(result.chunks)} "
@@ -505,20 +580,37 @@ def cmd_load(args):
                           f"{result.messages_per_chunk[i-1]} messages)")
                     print("=" * 60)
                     print(chunk)
-                return
+                return {
+                    "chunks": len(result.chunks),
+                    "chunk_token_counts": result.chunk_token_counts,
+                    "messages_per_chunk": result.messages_per_chunk,
+                    "dropped_messages": result.dropped_messages,
+                }
         else:
             print(info(f"Session fits in {advice.target_model} — no chunking needed."))
 
     # Compression on load (opt-in via --compress flag OR compression.enabled in config)
-    if args.compress or load_config().get("compression", {}).get("enabled", False):
-        config = load_config()
+    config = load_config()
+    try:
+        should_compress = _compression_requested(args, config)
+    except ValueError as exc:
+        print(error(str(exc)))
+        return None
+
+    if should_compress:
+        config = _apply_compression_overrides(config, args)
+        if args.compress:
+            config.setdefault("compression", {})["enabled"] = True
         engine = CompressionEngine(config)
 
         if not engine.is_configured():
             print(warn("Compression requires API key. Set with:"))
-            print("  aimem config set compression.enabled true")
             print("  aimem config set compression.api_key YOUR_KEY")
             print("  aimem config set compression.provider groq")
+            print("  aimem load <session-id> --to <agent> --compress")
+            print("Tip: only enable compression.enabled if you want compression to run automatically.")
+            if args.compress and args.inject:
+                return None
         else:
             print(info("Compressing session..."))
             original_tokens = session.estimate_tokens()
@@ -531,6 +623,9 @@ def cmd_load(args):
 
                 if session.compressed.current_goal:
                     print(f"  Goal: {session.compressed.current_goal[:60]}...")
+            elif args.compress and args.inject:
+                print(warn("Compression failed, so inject was cancelled to avoid writing an oversized raw session."))
+                return None
 
     # Inject directly into target agent storage
     if args.inject:
@@ -557,11 +652,16 @@ def cmd_load(args):
 
         print(info(f"Injecting session into {target} storage..."))
         try:
-            injected_path = adapter.inject(session)
+            if target == "opencode":
+                injected_path = adapter.inject(session, model=getattr(args, "opencode_model", None))
+            else:
+                injected_path = adapter.inject(session)
             injected_session_id = _extract_injected_session_id(target, injected_path)
             print(success(f"Injected into {target}!"))
             print(f"  Path: {injected_path}")
             print(f"  Session ID: {injected_session_id}")
+            if target == "opencode" and getattr(args, "opencode_model", None):
+                print(f"  Model: {args.opencode_model}")
             print(f"  Messages: {len(session.messages)}")
             print(f"  Tokens: ~{session.estimate_tokens():,}")
 
@@ -572,11 +672,15 @@ def cmd_load(args):
                 print(f"  > claude -p --resume {injected_session_id} \"Your next prompt\"")
             elif target == "codex":
                 print(f"\nTo resume in terminal, run:")
-                print(f"  > codex exec resume {injected_session_id} \"Your prompt here\"")
-                print(f"Or open VS Code to use the Codex extension.")
+                print(f"  > codex resume {injected_session_id}")
+                codex_model = _read_codex_injected_model(injected_path)
+                if codex_model and codex_model != _read_codex_default_model():
+                    print("If your default Codex model is not supported by this CLI, run:")
+                    print(f"  > codex -m {codex_model} resume {injected_session_id}")
+                print(f"Or open VS Code and use the Codex extension route for this session.")
             elif target == "opencode":
                 print(f"\nTo resume, run this command:")
-                print(f"  > opencode run -s {injected_session_id} \"Your next prompt\"")
+                print(f"  > opencode -s {injected_session_id}")
             elif target == "gemini":
                 print(f"\nTo resume, run this command:")
                 print(f"  > cd \"{session.metadata.project_path or os.getcwd()}\"")
@@ -593,7 +697,8 @@ def cmd_load(args):
             return {
                 "target": target,
                 "injected_session_id": injected_session_id,
-                "project_path": session.metadata.project_path or os.getcwd()
+                "project_path": session.metadata.project_path or os.getcwd(),
+                "injected_path": str(injected_path),
             }
         except Exception as e:
             print(error(f"Failed to inject: {e}"))
@@ -627,7 +732,8 @@ def cmd_load(args):
             pass
 
     # Context warning on load
-    advice = get_load_advice(session, target)
+    model_override = getattr(args, "opencode_model", None) if target == "opencode" else None
+    advice = get_load_advice(session, target, model=model_override)
     if advice.compression_recommended:
         print(warn(f"Session may be large for {advice.target_model}. "
                    f"Consider using: aimem load {session_id} --to {target} --compress"))
@@ -670,6 +776,28 @@ def cmd_list(args):
             print(f"    Goal: {goal[:50]}...")
         if sess.note:
             print(f"    Note: {sess.note}")
+
+
+def cmd_list_compression_models(args):
+    """List available/known compression models for a provider."""
+    config = load_config()
+    compression = config.get("compression", {})
+    provider = args.provider or compression.get("provider") or "gemini"
+    api_key = compression.get("api_key")
+    models = list_compression_models(provider, api_key)
+
+    print(f"\n* Compression models for {provider}")
+    print("=" * 60)
+    for model in models:
+        model_id = model.get("id", "")
+        label = model.get("label", model_id)
+        note = model.get("note", "")
+        source = model.get("source", "")
+        print(f"  - {model_id} | {label}")
+        if note:
+            print(f"    {note}")
+        if source:
+            print(f"    Source: {source}")
 
 
 def cmd_merge(args):
@@ -795,7 +923,10 @@ def cmd_config(args):
 
         current[keys[-1]] = value
         save_config(config)
-        print(success(f"Set {key} = {value}"))
+        display_value = value
+        if "api_key" in key.lower() and isinstance(value, str) and value:
+            display_value = f"{value[:4]}...{value[-4:]}" if len(value) > 8 else "***"
+        print(success(f"Set {key} = {display_value}"))
         return
 
     # Show config
@@ -821,7 +952,7 @@ def cmd_delete(args):
 # Main CLI
 # ─────────────────────────────────────────────────────────────
 
-def main(argv: list[str] | None = None):
+def main(argv: list[str] | None = None, return_result: bool = False):
     if argv is None:
         argv = sys.argv[1:]
 
@@ -864,8 +995,9 @@ Examples:
   aimem merge sess1 sess2 --smart      Smart merge (dedupe + merge)
   aimem list                          List saved sessions
   aimem list --agents                 List available agent sessions
-  aimem config set compression.enabled true
+  aimem load sess-abc123 --to codex --inject --compress
   aimem config set compression.api_key YOUR_KEY
+  aimem config set compression.enabled true  Enable auto-compress for every save/load
 
 Repository: https://github.com/aimem/aimem
         """
@@ -886,6 +1018,10 @@ Repository: https://github.com/aimem/aimem
     p_save.add_argument("--session-id", help="Specific session ID to export")
     p_save.add_argument("--clipboard", action="store_true", help="Save from clipboard")
     p_save.add_argument("--compress", action="store_true", help="LLM compress (requires API key)")
+    p_save.add_argument("--no-compress", action="store_true",
+                        help="Disable compression for this run even if compression.enabled is true")
+    p_save.add_argument("--compression-provider", choices=["groq", "gemini"], help="Override compression provider for this run")
+    p_save.add_argument("--compression-model", help="Override compression model for this run")
     p_save.add_argument("--clipboard-auto", action="store_true", help="Auto-copy to clipboard")
     p_save.set_defaults(func=cmd_save)
 
@@ -906,8 +1042,16 @@ Repository: https://github.com/aimem/aimem
                        help="Split into chunks if session exceeds target context limit")
     p_load.add_argument("--compress", action="store_true",
                        help="LLM compress before output (requires API key)")
+    p_load.add_argument("--no-compress", action="store_true",
+                       help="Disable compression for this run even if compression.enabled is true")
+    p_load.add_argument("--compression-provider", choices=["groq", "gemini"],
+                       help="Override compression provider for this run")
+    p_load.add_argument("--compression-model",
+                       help="Override compression model for this run")
     p_load.add_argument("--inject", action="store_true",
                        help="Inject directly into target agent storage (claude, gemini, qwen, codex, opencode)")
+    p_load.add_argument("--opencode-model",
+                       help="Override OpenCode target model as provider/model when using --to opencode --inject")
     p_load.set_defaults(func=cmd_load)
 
     # merge
@@ -923,7 +1067,13 @@ Repository: https://github.com/aimem/aimem
     # list
     p_list = subparsers.add_parser("list", help="List saved sessions")
     p_list.add_argument("--agents", action="store_true", help="List agent sessions instead")
-    p_list.set_defaults(func=lambda a: cmd_list_agents(a) if a.agents else cmd_list(a))
+    p_list.add_argument("--compression-models", action="store_true", help="List known/current compression models")
+    p_list.add_argument("--provider", choices=["groq", "gemini"], help="Provider for --compression-models")
+    p_list.set_defaults(
+        func=lambda a: cmd_list_compression_models(a)
+        if a.compression_models
+        else (cmd_list_agents(a) if a.agents else cmd_list(a))
+    )
 
     # config
     p_config = subparsers.add_parser("config", help="Show/update config")
@@ -941,18 +1091,23 @@ Repository: https://github.com/aimem/aimem
 
     if not hasattr(args, "func"):
         parser.print_help()
-        return
+        return None if return_result else 0
 
     # Run
     try:
-        return args.func(args)
+        result = args.func(args)
+        if return_result:
+            return result
+        return 0
     except KeyboardInterrupt:
         print("\nAborted.")
+        return None if return_result else 130
     except Exception as e:
         print(error(f"Error: {e}"))
         if os.environ.get("AIMEM_DEBUG"):
             import traceback
             traceback.print_exc()
+        return None if return_result else 1
 
 
 if __name__ == "__main__":

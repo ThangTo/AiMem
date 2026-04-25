@@ -124,3 +124,4 @@ code.txt
 check_*.py
 test_inject.py
 debug_compare.py
+tests/

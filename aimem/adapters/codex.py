@@ -11,6 +11,7 @@ from typing import Literal
 import json
 import os
 import re
+import sqlite3
 import uuid
 
 from ..models import UniversalSession, Message, SessionMetadata
@@ -150,6 +151,144 @@ def _thread_name(session: UniversalSession) -> str:
     return f"Transferred from {session.metadata.source_agent}"
 
 
+def _first_user_message(session: UniversalSession) -> str:
+    for message in session.messages:
+        if message.role == "user" and message.content.strip():
+            return message.content.strip()
+    return ""
+
+
+def _read_codex_config_values(base: Path) -> dict[str, str]:
+    config_file = base / "config.toml"
+    if not config_file.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    wanted = {"model", "model_reasoning_effort"}
+    try:
+        for raw_line in config_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key not in wanted:
+                continue
+            value = value.strip().strip('"').strip("'")
+            if value:
+                values[key] = value
+    except OSError:
+        return {}
+    return values
+
+
+def _state_cwd(cwd: str) -> str:
+    path_text = cwd or os.getcwd()
+    try:
+        path_text = str(Path(path_text).resolve())
+    except OSError:
+        path_text = os.path.abspath(path_text)
+
+    if os.name == "nt":
+        path_text = path_text.replace("/", "\\")
+        if re.match(r"^[A-Za-z]:\\", path_text) and not path_text.startswith("\\\\?\\"):
+            path_text = "\\\\?\\" + path_text
+    return path_text
+
+
+def _latest_state_db(base: Path) -> Path | None:
+    candidates = [path for path in base.glob("state_*.sqlite") if path.is_file()]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return candidates[0]
+
+
+def _register_codex_thread(
+    base: Path,
+    session: UniversalSession,
+    session_id: str,
+    session_file: Path,
+    now: datetime,
+    cwd: str,
+    thread_name: str,
+    model_name: str,
+    reasoning_effort: str,
+    cli_version: str,
+) -> None:
+    """Register imported rollout in Codex state DB so CLI and extension can find it."""
+    state_db = _latest_state_db(base)
+    if not state_db:
+        return
+
+    created_at = int(now.timestamp())
+    created_at_ms = int(now.timestamp() * 1000)
+    sandbox_policy = json.dumps({"type": "danger-full-access"}, separators=(",", ":"))
+    values = {
+        "id": session_id,
+        "rollout_path": str(session_file),
+        "created_at": created_at,
+        "updated_at": created_at,
+        "source": "cli",
+        "model_provider": "openai",
+        "cwd": _state_cwd(cwd),
+        "title": thread_name,
+        "sandbox_policy": sandbox_policy,
+        "approval_mode": "never",
+        "tokens_used": int(session.estimate_tokens()),
+        "has_user_event": 0,
+        "archived": 0,
+        "archived_at": None,
+        "git_sha": None,
+        "git_branch": None,
+        "git_origin_url": None,
+        "cli_version": cli_version,
+        "first_user_message": _first_user_message(session),
+        "agent_nickname": None,
+        "agent_role": None,
+        "memory_mode": "enabled",
+        "model": model_name,
+        "reasoning_effort": reasoning_effort,
+        "agent_path": None,
+        "created_at_ms": created_at_ms,
+        "updated_at_ms": created_at_ms,
+    }
+
+    with sqlite3.connect(str(state_db), timeout=5) as con:
+        con.execute("PRAGMA busy_timeout=5000")
+        table_info = con.execute("PRAGMA table_info(threads)").fetchall()
+        columns = [row[1] for row in table_info]
+        if not columns:
+            return
+        insert_columns = [column for column in values if column in columns]
+        placeholders = ", ".join("?" for _ in insert_columns)
+        quoted_columns = ", ".join(insert_columns)
+        update_columns = []
+        for column in insert_columns:
+            if column == "id":
+                continue
+            if column == "tokens_used":
+                update_columns.append(
+                    "tokens_used = CASE WHEN excluded.tokens_used > threads.tokens_used "
+                    "THEN excluded.tokens_used ELSE threads.tokens_used END"
+                )
+            elif column in ("created_at", "created_at_ms"):
+                update_columns.append(f"{column} = COALESCE(threads.{column}, excluded.{column})")
+            else:
+                update_columns.append(f"{column} = excluded.{column}")
+        con.execute(
+            f"INSERT INTO threads ({quoted_columns}) VALUES ({placeholders}) "
+            f"ON CONFLICT(id) DO UPDATE SET {', '.join(update_columns)}",
+            [values[column] for column in insert_columns],
+        )
+        con.commit()
+
+
+CODEX_BASE_INSTRUCTIONS = """You are Codex, a coding agent running from an AiMem-imported session.
+
+Continue the imported conversation faithfully. Treat the prior messages in this rollout as the conversation history and preserve the user's project context, goals, constraints, and decisions. Be concise, accurate, and proactive. When working with code, inspect the local workspace before making assumptions, avoid reverting unrelated user changes, and verify changes when feasible."""
+
+
 class CodexAdapter:
     name = "codex"
     description = "OpenAI Codex CLI"
@@ -276,7 +415,9 @@ class CodexAdapter:
         base_ts = _format_ts(None, now)
         thread_name = _thread_name(session)
         turn_id = str(uuid.uuid4())
-        model_name = session.metadata.model or "gpt-5.4"
+        codex_config = _read_codex_config_values(self.base)
+        model_name = codex_config.get("model") or session.metadata.model or "gpt-5.5"
+        reasoning_effort = codex_config.get("model_reasoning_effort") or "high"
         provider = "openai"
         cli_version = session.metadata.version or "0.118.0"
 
@@ -292,7 +433,7 @@ class CodexAdapter:
                 "source": "cli",
                 "model_provider": provider,
                 "model": model_name,
-                "base_instructions": {"text": ""},
+                "base_instructions": {"text": CODEX_BASE_INSTRUCTIONS},
             },
         }, {
             "timestamp": base_ts,
@@ -318,7 +459,7 @@ class CodexAdapter:
                 "personality": "friendly",
                 "collaboration_mode": {"mode": "default", "settings": {}},
                 "realtime_active": False,
-                "effort": "high",
+                "effort": reasoning_effort,
                 "summary": "none",
                 "truncation_policy": {"mode": "tokens", "limit": 10000},
             },
@@ -344,6 +485,16 @@ class CodexAdapter:
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": msg.content}],
                 }
+                entries.append({
+                    "timestamp": ts,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": msg.content,
+                        "phase": "final_answer",
+                        "memory_citation": None,
+                    },
+                })
             elif msg.role == "system":
                 payload = {
                     "type": "message",
@@ -361,6 +512,18 @@ class CodexAdapter:
                 "type": "response_item",
                 "payload": payload,
             })
+            if msg.role == "user":
+                entries.append({
+                    "timestamp": ts,
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": msg.content,
+                        "images": [],
+                        "local_images": [],
+                        "text_elements": [],
+                    },
+                })
 
         with session_file.open("w", encoding="utf-8") as handle:
             for entry in entries:
@@ -373,6 +536,19 @@ class CodexAdapter:
                 "thread_name": thread_name,
                 "updated_at": _format_ts(None, now),
             }, ensure_ascii=False) + "\n")
+
+        _register_codex_thread(
+            self.base,
+            session,
+            session_id,
+            session_file,
+            now,
+            cwd,
+            thread_name,
+            model_name,
+            reasoning_effort,
+            cli_version,
+        )
 
         return session_file
 

@@ -2,6 +2,23 @@
 
 All notable changes to AiMem will be documented in this file.
 
+## [0.2.8] - 2026-04-25
+
+### Fixed
+- Fixed OpenCode injected sessions so new prompts are not swallowed and LLM calls continue normally.
+- Fixed OpenCode imported message timestamps so new user chats are not inserted between older imported messages.
+- Restored the TUI post-inject resume prompt and terminal launcher for OpenCode.
+- Fixed Codex CLI injection by ensuring base instructions and visible transcript events are written.
+- Fixed Codex VS Code launch flow to use the extension deep link instead of opening a raw URI file.
+- Fixed CLI success exit behavior while preserving internal TUI result passing.
+
+### Added
+- Added `--no-compress` to explicitly disable compression for one run.
+- Added regression coverage for OpenCode injection ordering and context/model selection.
+
+### Changed
+- Rewrote README with clean UTF-8 documentation for the current release.
+
 ## [0.2.2] - 2026-04-20
 
 ### Added

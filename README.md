@@ -1,4 +1,4 @@
-# 🧠 AiMem — AI Memory Switcher
+﻿# AiMem - AI Memory Switcher
 
 <img src="assets/poster.png" alt="AiMem - Transfer context between AI agents" width="100%">
 
@@ -7,43 +7,15 @@
 [![License](https://img.shields.io/pypi/l/aimem-cli)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/ThangTo/AiMem)](https://github.com/ThangTo/AiMem/stargazers)
 
-> Transfer context seamlessly between AI agents (Claude, Gemini, Qwen, OpenCode, Codex...)
+AiMem helps you save, inspect, compress, and transfer conversation context between AI coding agents. When one agent hits a token limit, rate limit, or you simply want to switch tools, AiMem lets the next agent continue with the context you already built.
 
-When Claude hits rate-limits or you need to switch to another AI, AiMem helps you continue without losing your train of thought.
-
-**If this project helps you, please give it a ⭐ on [GitHub](https://github.com/ThangTo/AiMem)!**
-
----
-
-## 🤔 The Problem
-
-```
-You: "Claude is running out of tokens..."
-─────────────────────────────────────────────────
-│ Claude: Fixing authentication bug...            │
-│ 11PM - Claude hits rate limit!                │
-│                                              │
-│ NOW WHAT?                                    │
-│ → Copy all chat history? Tedious             │
-│ → Start from scratch? 30+ minutes lost      │
-│ → Lose context? Devastating                 │
-─────────────────────────────────────────────────
-
-→ With AiMem: 3 seconds to transfer
-$ aimem save --from claude
-$ aimem load sess-abc --to gemini
-# Paste into Gemini - full context transferred!
-```
-
----
-
-## 🚀 Install
+## Install
 
 ```bash
 pip install aimem-cli
 ```
 
-Or from source:
+From source:
 
 ```bash
 git clone https://github.com/ThangTo/AiMem.git
@@ -51,453 +23,250 @@ cd AiMem
 pip install -e .
 ```
 
----
+Run the interactive TUI:
 
-## ✨ Features
-
-- 🎮 **Interactive TUI**: Fully featured Terminal UI with arrow-key navigation
-- 📤 **Save** sessions from Claude, Gemini, Qwen, OpenCode, Codex, Aider, Continue.dev
-- 📥 **Load** to any AI agent with proper format
-- 💉 **Inject** directly into agent storage (auto-opens new terminal to resume!)
-- 📊 **Analyze** if session fits target model context limit
-- ✂️ **Chunk** large sessions automatically
-- 🗜️ **Compress** sessions with LLM (95% reduction, configurable via TUI settings)
-- 🔀 **Merge** multiple sessions (Smart deduplication)
-- 🗑️ **Multi-Delete**: Select and delete multiple sessions easily via TUI
-
----
-
-## ⚡ Quick Start
-
-### 🎮 Interactive Mode (TUI - Recommended)
-The easiest way to use AiMem is via the interactive Terminal UI. Just run:
 ```bash
 aimem-cli
 ```
-*Use arrow keys to navigate menus, configure settings, compress sessions, and transfer context without remembering any commands!*
 
----
+## What Is New In 0.2.8
 
-### Transfer from Claude to OpenCode (CLI)
+- Fixed OpenCode injection so imported messages no longer block the next real prompt from calling the LLM.
+- Fixed OpenCode message timestamps so new chats are not inserted between older imported messages.
+- Restored TUI resume flow after injection, including opening `opencode -s <session-id>` in a new terminal.
+- Fixed Codex CLI injection by writing complete base instructions and visible transcript events.
+- Improved Codex VS Code extension launch through the correct deep link flow.
+- Added `--no-compress` so compression is only used when explicitly requested or enabled.
+- Added regression tests for OpenCode injection ordering, model selection, and context budgeting.
+
+## Core Features
+
+- Interactive TUI with session selection, analysis, chunking, compression, injection, and resume actions.
+- Save sessions from Claude, Gemini, Qwen, OpenCode, Codex, Cursor, Aider, Continue.dev, or clipboard.
+- Load sessions as Markdown, Claude, Gemini, Qwen, OpenCode, Codex, Cursor, Continue.dev, or prompt format.
+- Inject directly into supported agent storage, then resume in the target tool.
+- Analyze context size against the target model before loading.
+- Chunk large sessions while preserving all messages.
+- Optional LLM compression with explicit `--compress` and `--no-compress` controls.
+- Merge multiple sessions into a single context package.
+
+## Quick Start
+
+### Interactive Mode
+
 ```bash
-# Save current Claude session
-aimem-cli save --from claude
+aimem-cli
+```
 
-# Inject directly into OpenCode
+Use the TUI to:
+
+- Pick a source session.
+- Analyze, chunk, compress, copy, or inject it.
+- Open the injected target session directly when supported.
+
+### Transfer Claude To OpenCode
+
+```bash
+aimem-cli save --from claude
 aimem-cli load <session-id> --to opencode --inject
-
-# Open the session in OpenCode
-opencode -s <session-id-from-output>
+opencode -s <opencode-session-id>
 ```
 
-### Transfer to Markdown (for any AI)
+In the TUI, after injection you can choose to open the OpenCode session immediately in a new terminal.
+
+### Transfer To Codex
+
 ```bash
 aimem-cli save --from claude
-aimem-cli load <session-id> --to markdown
-# Content copied to clipboard - paste anywhere
+aimem-cli load <session-id> --to codex --inject
+codex resume <codex-session-id>
 ```
 
----
+The TUI also supports opening the injected Codex session in the terminal or in the VS Code extension.
 
-## 📖 All Commands
+### Transfer Through Markdown
 
-### `aimem-cli init`
-Initialize config file at `~/.aimem/config.json`.
+```bash
+aimem-cli save --from claude
+aimem-cli load <session-id> --to markdown --copy
+```
+
+Paste the generated context into any AI assistant.
+
+## Commands
+
+### Initialize Config
 
 ```bash
 aimem-cli init
-aimem-cli init --force    # Overwrite existing config
+aimem-cli init --force
 ```
 
----
-
-### `aimem-cli save --from <agent>`
-Save a session from an agent to AiMem storage.
+### Save A Session
 
 ```bash
-# From Claude
 aimem-cli save --from claude
-aimem-cli save --from claude --session-id <id>
-
-# From Gemini
 aimem-cli save --from gemini
-
-# From Qwen
 aimem-cli save --from qwen
-
-# From OpenCode
 aimem-cli save --from opencode
-
-# From Codex
 aimem-cli save --from codex
-
-# From Aider
+aimem-cli save --from cursor
 aimem-cli save --from aider
-
-# From Continue.dev
 aimem-cli save --from continue
-
-# From Clipboard
 aimem-cli save --from clipboard
-
-# With LLM compression (requires API key)
-aimem-cli save --from claude --compress
 ```
 
----
-
-### `aimem-cli load <session-id> --to <format>`
-Load a saved session to target format.
+Save a specific session when the adapter supports it:
 
 ```bash
-# To Markdown (copy to clipboard)
+aimem-cli save --from opencode --session-id <session-id>
+```
+
+### Load Or Convert A Session
+
+```bash
 aimem-cli load <session-id> --to markdown
-
-# To Claude (markdown format)
 aimem-cli load <session-id> --to claude
-
-# To Gemini
 aimem-cli load <session-id> --to gemini
-
-# To Qwen
 aimem-cli load <session-id> --to qwen
-
-# To Prompt (for API calls)
-aimem-cli load <session-id> --to prompt
-
-# To OpenCode
 aimem-cli load <session-id> --to opencode
-
-# To Codex
 aimem-cli load <session-id> --to codex
-
-# To Continue.dev
+aimem-cli load <session-id> --to cursor
 aimem-cli load <session-id> --to continue
+aimem-cli load <session-id> --to prompt
 ```
 
----
-
-### `aimem-cli load <session-id> --to <agent> --inject`
-**Inject directly into agent storage** - no copy-paste needed!
+### Inject Into Target Storage
 
 ```bash
-# Inject into OpenCode (RECOMMENDED)
-aimem-cli load <session-id> --to opencode --inject
-opencode -s <session-id>
-
-# Inject into Claude
 aimem-cli load <session-id> --to claude --inject
-claude --resume
-
-# Inject into Gemini
 aimem-cli load <session-id> --to gemini --inject
-
-# Inject into Qwen
 aimem-cli load <session-id> --to qwen --inject
-
-# Inject into Codex
+aimem-cli load <session-id> --to opencode --inject
 aimem-cli load <session-id> --to codex --inject
+aimem-cli load <session-id> --to cursor --inject
 ```
 
----
-
-### `aimem-cli list`
-List all saved sessions.
+OpenCode model override:
 
 ```bash
-# List all saved sessions
-aimem-cli list
-
-# List sessions from specific agent
-aimem-cli list --from claude
-aimem-cli list --from gemini
-aimem-cli list --from qwen
-
-# List available agents
-aimem-cli list --agents
+aimem-cli load <session-id> --to opencode --inject --opencode-model google/gemma-4-31b-it
 ```
 
----
-
-### `aimem-cli merge <session-id-1> <session-id-2>`
-Merge multiple sessions into one.
+### Analyze, Chunk, Compress
 
 ```bash
-# Simple merge (concatenate)
-aimem-cli merge sess-abc sess-def
-
-# Smart merge (deduplicate, combine goals, merge todos)
-aimem-cli merge sess-abc sess-def --smart
-
-# Smart merge with target format
-aimem-cli merge sess-abc sess-def --smart --to gemini
+aimem-cli load <session-id> --to opencode --analyze
+aimem-cli load <session-id> --to opencode --chunk
+aimem-cli load <session-id> --to opencode --compress --inject
+aimem-cli load <session-id> --to opencode --no-compress --inject
 ```
 
----
-
-### `aimem-cli config`
-View or update configuration.
+### Merge Sessions
 
 ```bash
-# Show current config
+aimem-cli merge <session-a> <session-b>
+aimem-cli merge <session-a> <session-b> --smart
+aimem-cli merge <session-a> <session-b> --smart --to gemini
+```
+
+### Config
+
+```bash
 aimem-cli config
-
-# Set config values
 aimem-cli config set compression.enabled true
+aimem-cli config set compression.enabled false
 aimem-cli config set compression.api_key YOUR_API_KEY
 aimem-cli config set compression.provider groq
-aimem-cli config set output.format markdown
 aimem-cli config set output.clipboard_auto true
 ```
 
----
-
-### `aimem-cli delete <session-id>`
-Delete a saved session.
+### Delete
 
 ```bash
 aimem-cli delete <session-id>
 ```
 
----
+## Supported Agents
 
-### Analyze context before loading
+### Sources
 
-Check if a session fits in target model's context limit.
+| Agent | Notes |
+| --- | --- |
+| Claude | Reads Claude Code JSONL project sessions |
+| Gemini | Reads Gemini CLI chat sessions |
+| Qwen | Reads Qwen CLI logs |
+| OpenCode | Reads OpenCode database/export sessions |
+| Codex | Reads Codex rollout sessions |
+| Cursor | Reads Cursor composer data |
+| Aider | Reads `.aider.chat.history.md` |
+| Continue.dev | Reads Continue session database |
+| Clipboard | Saves current clipboard content |
 
-```bash
-# Analyze if session fits in Qwen's 32K context
-aimem-cli load <session-id> --to qwen --analyze
+### Injection Targets
 
-# Output example:
-# ⚠️ Session EXCEEDS Qwen limit (50K tokens vs 32K limit)
-# 💡 Try: aimem load <session-id> --to qwen --chunk
+| Target | Resume Command |
+| --- | --- |
+| Claude | `claude --resume` |
+| Gemini | `gemini --resume` |
+| Qwen | `qwen --resume` |
+| OpenCode | `opencode -s <session-id>` |
+| Codex CLI | `codex resume <session-id>` |
+| Codex VS Code | Opens `vscode://openai.chatgpt/local/<session-id>` |
+| Cursor | Opens the target project/session in Cursor |
+
+## Configuration
+
+Config file:
+
+```text
+~/.aimem/config.json
 ```
 
----
-
-### Chunk large sessions
-
-Automatically split session into smaller chunks if too large for target.
-
-```bash
-# Auto-chunk for Qwen (32K limit)
-aimem-cli load <session-id> --to qwen --chunk
-
-# Output:
-# 📦 CHUNK 1/2 (25K tokens)
-# [content of chunk 1]
-# ─────────────────────
-# 📦 CHUNK 2/2 (25K tokens)
-# [content of chunk 2]
-```
-
----
-
-### Compress session with LLM
-
-Reduce session size using LLM compression (requires API key).
-
-```bash
-# Compress on save
-aimem-cli save --from claude --compress
-
-# Compress on load
-aimem-cli load <session-id> --compress
-
-# Result: ~95% size reduction
-# Output: {
-#   "current_goal": "Fix authentication bug",
-#   "latest_code": [{"path": "auth.py", "content": "..."}],
-#   "current_errors": ["TypeError: undefined"],
-#   "key_decisions": ["Used JWT instead of session"],
-#   "todo_list": ["Write tests", "Deploy to staging"]
-# }
-```
-
----
-
-## 🔧 Supported Agents
-
-### Source (`--from`)
-
-| Agent | Storage Location | Inject? |
-|-------|-----------------|---------|
-| `claude` | `~/.claude/projects/*/*.jsonl` | ✅ |
-| `gemini` | `~/.gemini/tmp/*/chats/*.json` | ✅ |
-| `qwen` | `~/.qwen/tmp/*/logs.json` | ✅ |
-| `opencode` | `~/.opencode/sessions/*.json` | ✅ |
-| `codex` | `~/.codex/sessions/*.jsonl` | ✅ |
-| `aider` | `~/.aider.chat.history.md` | ❌ |
-| `continue` | `~/.continue/sessions.db` | ❌ |
-| `clipboard` | System clipboard | ❌ |
-
-### Target (`--to`)
-
-| Format | Best for | Inject? |
-|--------|---------|---------|
-| `markdown` | Paste anywhere | ❌ |
-| `claude` | Claude Code CLI | ✅ |
-| `gemini` | Gemini CLI | ✅ |
-| `qwen` | Qwen CLI | ✅ |
-| `opencode` | OpenCode CLI | ✅ |
-| `codex` | Codex CLI | ✅ |
-| `prompt` | API calls | ❌ |
-
----
-
-## ⚙️ Configuration
-
-Config file: `~/.aimem/config.json`
-
-```bash
-# Show config
-aimem-cli config
-
-# Enable LLM compression (opt-in)
-aimem-cli config set compression.enabled true
-aimem-cli config set compression.api_key YOUR_GROQ_KEY
-aimem-cli config set compression.provider groq
-
-# Auto-copy to clipboard
-aimem-cli config set output.clipboard_auto true
-```
-
-### Config Options
+Important options:
 
 | Option | Default | Description |
-|--------|---------|-------------|
-| `compression.enabled` | `false` | Enable LLM compression |
-| `compression.provider` | `"groq"` | Compression provider (groq, gemini) |
-| `compression.api_key` | `""` | API key for compression |
-| `output.format` | `"markdown"` | Default output format |
-| `output.clipboard_auto` | `true` | Auto-copy to clipboard |
-| `storage.path` | `"~/.aimem/sessions"` | Session storage path |
+| --- | --- | --- |
+| `compression.enabled` | `false` | Enable automatic LLM compression |
+| `compression.provider` | `groq` | Compression provider |
+| `compression.api_key` | empty | API key for compression |
+| `output.format` | `markdown` | Default output format |
+| `output.clipboard_auto` | `true` | Auto-copy generated output |
+| `storage.path` | `~/.aimem/sessions` | Saved session directory |
 
----
+## Development
 
-## 📝 Examples
-
-### Example 1: Transfer Claude session to OpenCode
 ```bash
-$ aimem-cli save --from claude
-[i] Found 5 Claude sessions. Select one:
-  [1] 2026-04-20 | Fix authentication bug
-  [2] 2026-04-19 | Add user login feature
-  [3] 2026-04-18 | Research API design
-Enter number (default=1): 1
-[OK] Saved session: claude-abc123
-
-$ aimem-cli load claude-abc123 --to opencode --inject
-[OK] Injected into OpenCode
-    Session ID: ses_xyz789
-Resume with: opencode -s ses_xyz789
-
-$ opencode -s ses_xyz789
-# Continue with full context in OpenCode!
+pip install -e ".[dev]"
+python -m pytest
+python -m build
 ```
 
-### Example 2: Transfer to any AI via Markdown
-```bash
-$ aimem-cli save --from claude
-[OK] Saved session: claude-abc123
+Project layout:
 
-$ aimem-cli load claude-abc123 --to markdown
-[OK] Content copied to clipboard!
-
-# Paste into any AI: Gemini, ChatGPT, Qwen, etc.
+```text
+aimem/
+  cli.py
+  tui.py
+  models.py
+  storage.py
+  compression.py
+  context_manager.py
+  adapters/
+    claude.py
+    gemini.py
+    qwen.py
+    opencode.py
+    codex.py
+    cursor.py
+    aider.py
+    continue_dev.py
 ```
 
-### Example 3: Merge multiple sessions
-```bash
-$ aimem-cli merge claude-abc claude-def claude-ghi
-[i] Merging 3 sessions...
-[OK] Merged session: merged-xyz123
-    Total messages: 156
+## License
 
-$ aimem-cli load merged-xyz123 --to gemini --inject
-```
+MIT License. See [LICENSE](LICENSE).
 
----
+## Contributing
 
-## 🏗️ Architecture
-
-```
-aimem-cli/
-├── aimem/
-│   ├── cli.py                 # CLI interface
-│   ├── models.py              # UniversalSession model
-│   ├── storage.py             # File storage
-│   ├── compression.py         # LLM compression
-│   ├── context_manager.py     # Context management
-│   └── adapters/
-│       ├── claude.py          # Claude Code adapter
-│       ├── gemini.py          # Gemini CLI adapter
-│       ├── qwen.py             # Qwen CLI adapter
-│       ├── opencode.py         # OpenCode adapter
-│       ├── codex.py            # Codex adapter
-│       ├── aider.py            # Aider adapter
-│       ├── continue_dev.py     # Continue.dev adapter
-│       ├── clipboard.py        # Clipboard adapter
-│       └── output/             # Output formatters
-│           ├── __init__.py
-│           ├── markdown.py
-│           ├── claude.py
-│           ├── gemini.py
-│           ├── qwen.py
-│           ├── prompt.py
-│           ├── continue.py
-│           ├── codex.py
-│           └── opencode.py
-```
-
----
-
----
-
-## 📋 Supported Agents
-
-| Source | Storage | Inject? |
-|--------|---------|----------|
-| Claude | `~/.claude/projects/*/*.jsonl` | ✅ |
-| Gemini | `~/.gemini/tmp/*/chats/*.json` | ✅ |
-| Qwen | `~/.qwen/tmp/*/logs.json` | ✅ |
-| OpenCode | `~/.opencode/sessions/*.json` | ✅ |
-| Codex | `~/.codex/sessions/*.jsonl` | ✅ |
-| Aider | `~/.aider.chat.history.md` | ❌ |
-| Continue | `~/.continue/sessions.db` | ❌ |
-| Clipboard | System clipboard | ❌ |
-
----
-
-## 🚀 Roadmap
-
-- [ ] Add more adapters ( Zed, Cursor )
-- [ ] Docker support
-- [ ] WebUI for session management
-- [ ] VS Code extension
-
----
-
-## 📝 License
-
-MIT License - See [LICENSE](LICENSE)
-
----
-
-## 👏 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute.
-
----
-
-## 👏 Acknowledgments
-
-- Claude Code for the great developer experience
-- All open source contributors
-
----
-
-<p align="center">
-  <sub>Made with ❤️ by <a href="https://github.com/ThangTo">ThangTo</a></sub>
-</p>
+See [CONTRIBUTING.md](CONTRIBUTING.md).
